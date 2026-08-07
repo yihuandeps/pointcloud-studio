@@ -1,0 +1,28 @@
+# 点云工具 · 高精度模式后端依赖
+#
+# 不要直接 pip install -r 这个文件 —— torch 必须从 PyTorch 自己的源装 CUDA 版本，
+# 请用 setup.ps1，它会按正确顺序和正确的源来装。
+#
+# ---- 装法（setup.ps1 实际执行的）----
+#
+# 1) PyTorch CUDA 版（约 2.5GB）
+#    本机驱动 546.33 = CUDA 12.3，选 cu121 是确定兼容的（cu126 需依赖小版本兼容，不赌）
+#    pip install torch==2.5.1 torchvision --index-url https://download.pytorch.org/whl/cu121
+#
+# 2) MoGe 及其依赖（会连带装 utils3d / gradio 等）
+#    pip install git+https://github.com/microsoft/MoGe.git
+#
+# 3) Web 服务
+#    pip install fastapi "uvicorn[standard]" python-multipart
+#
+# ---- 运行时实际用到的 ----
+torch>=2.0.0          # 从 cu121 源装
+torchvision           # 同上
+moge                  # 从 GitHub 装
+fastapi
+uvicorn[standard]
+python-multipart      # FastAPI 处理 multipart/form-data 上传必需，容易漏
+pillow
+numpy
+opencv-python
+huggingface_hub

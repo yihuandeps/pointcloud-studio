@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.local
+
+# 预下载的模型权重（约 73MB / 个），用 npm run fetch-model 重新获取，不入库
+public/models/
+
+# 测试产物
+tests/out/

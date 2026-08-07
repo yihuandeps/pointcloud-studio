@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>点云工具 · PointCloud Studio</title>
+  <meta name="description" content="把一张普通照片变成可交互的 3D 点云 / 粒子云，并导出标准 PLY 文件。" />
+</head>
+<body>
+  <div id="app">
+    <!-- 3D 舞台 -->
+    <canvas id="stage"></canvas>
+
+    <!-- 品牌 -->
+    <header class="brand">
+      <div class="brand__mark" aria-hidden="true"></div>
+      <div class="brand__text">
+        <h1>点云工具</h1>
+        <p>PointCloud&nbsp;Studio</p>
+      </div>
+    </header>
+
+    <!-- 空态 / 拖拽上传 -->
+    <div class="dropzone" id="dropzone">
+      <div class="dropzone__inner">
+        <div class="dropzone__icon" aria-hidden="true">
+          <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.4"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M24 32V10m0 0-7.5 7.5M24 10l7.5 7.5" />
+            <path d="M6 30v6a4 4 0 0 0 4 4h28a4 4 0 0 0 4-4v-6" />
+          </svg>
+        </div>
+        <h2>把图片拖进来</h2>
+        <p>或者 <button type="button" class="linkbtn" id="pickBtn">选择文件</button>，也可以直接 Ctrl+V 粘贴</p>
+        <div class="dropzone__samples">
+          <span class="dropzone__sampleslabel">没有素材？试试内置示例</span>
+          <div class="samples" id="samples"></div>
+        </div>
+        <p class="dropzone__note" id="engineNote">正在检测推理后端…</p>
+      </div>
+    </div>
+
+    <!-- 参数面板 -->
+    <aside class="panel" id="panel" data-collapsed="false">
+      <button type="button" class="panel__toggle" id="panelToggle" aria-label="收起/展开面板">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"
+             stroke-linecap="round" stroke-linejoin="round"><path d="m6 3 5 5-5 5" /></svg>
+      </button>
+      <div class="panel__scroll" id="panelScroll">
+        <!-- 引擎区（静态） -->
+        <section class="group">
+          <h3 class="group__title">引擎</h3>
+          <div class="row">
+            <label class="row__label" for="modeSel">推理模式</label>
+            <select class="select" id="modeSel">
+              <option value="browser">⚡ 浏览器（WebGPU）</option>
+              <option value="server">🎯 本机 Python（高精度）</option>
+            </select>
+          </div>
+          <div class="row" id="modelRow">
+            <label class="row__label" for="modelSel">模型</label>
+            <select class="select" id="modelSel"></select>
+          </div>
+          <div class="engine" id="engineBadge">
+            <span class="engine__dot" data-state="idle"></span>
+            <span class="engine__text">未加载</span>
+          </div>
+        </section>
+
+        <!-- 参数区（由 panel.js 注入） -->
+        <div id="paramGroups"></div>
+
+        <!-- 导出区（静态） -->
+        <section class="group">
+          <h3 class="group__title">导出</h3>
+          <div class="row">
+            <label class="row__label" for="plyFormat">PLY 格式</label>
+            <select class="select" id="plyFormat">
+              <option value="binary">二进制（体积小）</option>
+              <option value="ascii">ASCII（可读）</option>
+            </select>
+          </div>
+          <label class="check">
+            <input type="checkbox" id="keepScale" />
+            <span>保持原始尺度</span>
+          </label>
+          <div class="btnrow">
+            <button type="button" class="btn btn--primary" id="exportPly" disabled>导出 PLY</button>
+            <button type="button" class="btn" id="snapshot" disabled>截图 PNG</button>
+          </div>
+          <div class="btnrow">
+            <button type="button" class="btn" id="replay" disabled>重播聚合动画</button>
+            <button type="button" class="btn" id="resetView" disabled>复位视角</button>
+          </div>
+        </section>
+      </div>
+    </aside>
+
+    <!-- 状态栏 -->
+    <footer class="statusbar" id="statusbar">
+      <span class="stat" id="statPoints">— 点</span>
+      <span class="stat__sep"></span>
+      <span class="stat" id="statSize">—</span>
+      <span class="stat__sep"></span>
+      <span class="stat" id="statTime">—</span>
+      <span class="stat__sep"></span>
+      <span class="stat" id="statFps">— FPS</span>
+    </footer>
+
+    <!-- 进度 / 提示 -->
+    <div class="toast" id="toast" hidden>
+      <div class="toast__bar"><i id="toastBar"></i></div>
+      <span class="toast__text" id="toastText"></span>
+    </div>
+
+    <input type="file" id="fileInput" accept="image/*" hidden />
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

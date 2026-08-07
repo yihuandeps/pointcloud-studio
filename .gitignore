@@ -1,0 +1,20 @@
+# 前端
+web/node_modules/
+web/dist/
+# 预下载的模型权重，用 npm run fetch-model 重新获取
+web/public/models/
+web/tests/out/
+
+# 后端
+server/.venv/
+# pip 临时目录与缓存、HuggingFace 模型缓存
+server/.cache/
+server/__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# 杂项
+.claude/
+.DS_Store
+Thumbs.db
+*.local
