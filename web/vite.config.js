@@ -1,6 +1,9 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  // GitHub Pages 部署在 /pointcloud-studio/ 子路径下
+  base: process.env.DEPLOY_BASE || '/',
+
   server: {
     host: '127.0.0.1',
     port: 5173,

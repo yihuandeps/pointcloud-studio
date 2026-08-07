@@ -14,7 +14,7 @@ export const HF_ENDPOINT = 'https://hf-mirror.com/';
  * 跑过 `npm run fetch-model` 之后模型就在这里，运行时零网络依赖。
  * 本地找不到会自动回落到上面的镜像。
  */
-export const LOCAL_MODEL_PATH = '/models/';
+export const LOCAL_MODEL_PATH = import.meta.env.BASE_URL + 'models/';
 
 /** 可选的浏览器端深度模型。体积为 fp16 / q8 两种量化的大致值。 */
 export const MODELS = {
