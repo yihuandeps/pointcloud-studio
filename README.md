@@ -3,9 +3,15 @@
 把一张普通照片变成可交互的 3D 点云 / 粒子云，并导出标准 PLY 文件。
 
 - **⚡ 浏览器快速模式** —— 模型在你自己的浏览器里跑（WebGPU），零服务器成本，纯静态可部署
-- **🎯 Python 高精度模式** —— 本机 GPU 跑 MoGe-2，输出带真实米制尺度的点云（阶段二）
+- **🎯 Python 高精度模式** —— 本机 GPU 跑 MoGe-2，输出带真实米制尺度的点云
+- **🧊 生成式 3D 模式** —— 本机 GPU 跑 TripoSR，**补全照片里看不见的背面**，转到任意角度都有形体
 
 技术方案与算法推导见 [PLAN.md](PLAN.md)。
+
+> **先说清楚一件事：前两种模式做不出"能转一圈"的效果。**
+> 单张照片只记录了朝向镜头的那一层表面，深度估计再准也只能把这层皮推出去 ——
+> 得到的是**浮雕（2.5D）**，正面看很立体，转到侧面就是一张弯曲的纸，背后是空的。
+> 这不是参数没调好，是单图信息量的上限。想要真正的立体，用生成式 3D 模式。
 
 ---
 
@@ -107,15 +113,22 @@ cd server
 | `moge-2-vitb-normal` | 104M | ~400 MB | 更快 |
 | `moge-2-vits-normal` | 35M | ~140 MB | 最轻，网络差时先用这个试通 |
 
-### 两种模式的区别
+### 三种模式的区别
 
-| | ⚡ 浏览器 | 🎯 高精度 |
-|---|---|---|
-| 模型 | Depth Anything V2-Small (25M) | MoGe-2 ViT-L (326M) |
-| 深度性质 | 相对值，尺度未知 | **米制尺度 + 自动预测内参** |
-| 单图耗时 | 0.2–1s | 0.1–0.3s + 传输 |
-| 边缘质量 | 靠「边缘剔除」滑杆补救 | 模型自带 mask，更干净 |
-| 依赖 | 无 | Python + GPU |
+| | ⚡ 浏览器 | 🎯 高精度 | 🧊 生成式 3D |
+|---|---|---|---|
+| 模型 | Depth Anything V2-Small (25M) | MoGe-2 ViT-L (326M) | TripoSR (~1.4GB) |
+| 产物 | 浮雕（一层皮） | 浮雕（一层皮，米制） | **完整 360° 形体** |
+| 转到背面 | 空的 | 空的 | **有内容（模型生成）** |
+| 几何来源 | 测量（推断可见表面） | 测量（米制尺度 + 自动内参） | **生成（推断完整形体）** |
+| 单图耗时 | 0.2–1s | 0.1–0.3s + 传输 | 5–20s |
+| 依赖 | 无 | Python + GPU | Python + GPU |
+| 适合 | 快速出特效 | 要真实尺度 / 干净边缘 | 要能转一圈看 |
+
+**"测量"和"生成"的区别很重要**：前两种模式给出的几何来自照片里真实可见的像素；
+生成式模式的背面是模型依据训练时见过的海量物体**编出来的合理形状**，
+它看起来自洽，但不保证和实物的真实背面一致。要真实的背面，只能环着实物拍多张照片走摄影测量
+（Luma AI / Polycam / COLMAP 那条路），单张照片做不到。
 
 切到高精度模式后，**「视场角 FOV」「深度强度」「边缘剔除」「远景剔除」四个滑杆会自动置灰** ——
 这些参数是给相对深度用的，MoGe 给的是真实几何，它们不参与计算。「保持原始尺度」导出的
@@ -130,6 +143,48 @@ $env:MOGE_MODEL = "Ruicheng/moge-2-vitb-normal"   # 104M，更快
 
 可选：`moge-2-vitl`（默认，326M）· `moge-2-vitl-normal`（331M，带法线）·
 `moge-2-vitb-normal`（104M）· `moge-2-vits-normal`（35M）
+
+---
+
+## 🧊 生成式 3D 模式（补全背面）
+
+用 [TripoSR](https://github.com/VAST-AI-Research/TripoSR) 从单张图推断**完整的 360° 形体**，
+包括照片里完全看不见的背面。这是三种模式里唯一能"转一圈都不穿帮"的。
+
+和高精度模式共用同一个后端（`server/start.ps1`，依赖也由同一个 `setup.ps1` 装好），
+在前端面板「引擎 → 推理模式」切到 **🧊 生成式 3D** 即可。
+
+### 怎么用效果最好
+
+TripoSR 是按**居中的单个物体**训练的，后端会先用 rembg 自动抠掉背景。所以：
+
+- **好使**：商品、玩具、家具、雕塑、人物半身像 —— 主体明确、边界清楚
+- **不好使**：风景、街景、多个物体、大场景 —— 模型不知道该把哪个当主体
+
+风景照请用前两种模式（那种场景本来也不需要看背面）。
+
+### 参数与耗时
+
+切到这个模式后，**「视场角 FOV」「深度强度」「边缘剔除」「远景剔除」会自动置灰** ——
+这些是给深度图反投影用的，生成式模式直接产出三维形体，它们不参与计算。
+「点数」滑杆仍然有效，后端一次采样 60 万点，前端本地抽稀，**改点数不用重跑模型**。
+
+RTX 3070 Laptop（8GB）实测：模型冷加载约 12 秒，之后每张图 5–20 秒。
+
+### 显存说明（8GB 卡请留意）
+
+MoGe 和 TripoSR 各要 1.5GB 上下，同时驻留会 OOM，所以后端做了**显存互斥**：
+切换模式时会自动把另一个模型踢出显存，切回来需要重新加载（约 10–20 秒）。
+
+marching cubes 的体素分辨率默认 192。**显存不足时会自动降级重试**
+（160 → 128 → 96），不会直接失败。想要更高细节且显存充裕：
+
+```powershell
+$env:TRIPO_MC_RES = "256"   # 细节更好，需要约 2GB 额外显存
+.\start.ps1
+```
+
+如果生成时报显存不足，先关掉浏览器等占显存的程序 —— 桌面应用通常已经吃掉 1–2GB。
 
 ---
 
@@ -148,7 +203,17 @@ npm test                       # 全部测试（核心算法 40 项 + 前后端�
 npm run test:core              # 只跑核心算法（不需要模型和 Python）
 npm run test:protocol          # 只跑前后端契约（需要 Python，不需要 torch）
 npm run test:e2e               # 端到端：真实推理 → 点云 → 导出 PLY（需先 fetch-model）
+
+# 后端（在 server/ 下，用 .venv 里的 python）
+.venv\Scripts\python.exe test_backend.py    # 高精度模式：MoGe 推理 → HTTP → 二进制打包
+.venv\Scripts\python.exe test_gen3d.py      # 生成式 3D：TripoSR → 立体性检验 → HTTP
 ```
+
+**两个后端测试要分开跑** —— 各自都要把模型加载进显存，8GB 的卡同时跑会 OOM。
+
+`test_gen3d.py` 里有两项断言值得说明，它们是这个模式存在意义的直接检验：
+**三轴跨度比 > 0.4**（浮雕的最薄轴向接近 0，实测球体 0.96）、
+**背面点占比 > 25%**（纯正面浮雕接近 0，实测 49.2%）。
 
 **关于契约测试**：尺寸计算和二进制布局在 Python 和 JS 里各实现了一遍。两边差一个像素，
 点图和颜色就整体错位，画面看着"糊了"却查不出原因；布局对不上则会解出一堆 NaN。
@@ -186,6 +251,7 @@ npm run build
 │   │   │   ├── depth.worker.js  Worker 里跑深度估计，不卡 UI
 │   │   │   ├── depthBrowser.js  Worker 的 Promise 封装
 │   │   │   ├── depthServer.js   高精度模式的 API 客户端
+│   │   │   ├── gen3dServer.js   生成式 3D 的 API 客户端
 │   │   │   ├── imagePrep.js     解码 / 限长边 / 程序化示例图
 │   │   │   ├── unproject.js     ⭐ 深度图 → XYZRGB（核心算法）
 │   │   │   └── plyExport.js     PLY 写出
@@ -194,10 +260,22 @@ npm run build
 │   ├── scripts/fetch-model.mjs  模型预下载
 │   ├── tests/                   回归测试
 │   └── public/models/           预下载的模型（不入库）
-├── server/                      Python 后端（阶段二）
+├── server/                      Python 后端（高精度 + 生成式 3D）
+│   ├── app.py                   FastAPI 接口 + 两个模型的显存互斥
+│   ├── moge_runner.py           MoGe-2 封装（高精度）
+│   ├── tripo_runner.py          TripoSR 封装（生成式 3D）
+│   ├── tsr/                     vendored TripoSR 源码（见下）
+│   ├── test_backend.py          高精度模式端到端测试
+│   └── test_gen3d.py            生成式 3D 端到端测试
 ├── PLAN.md                      技术方案与算法推导
 └── README.md
 ```
+
+**关于 `server/tsr/`**：TripoSR 官方不发 PyPI 包，只能装源码，所以直接 vendor 进来了
+（MIT 协议，LICENSE 已一并保留）。相对上游改了一处：`tsr/models/isosurface.py` 里的
+`torchmcubes` 换成了 `scikit-image` 的 `marching_cubes`。原因是 torchmcubes 只提供
+`git+https://` 源码依赖且需要本地编译 C++/CUDA 扩展，Windows 上装不上。
+两者顶点轴序不同（torchmcubes 是 zyx，skimage 是 xyz），所以上游那句 `[2,1,0]` 翻转也一并去掉了。
 
 ---
 
@@ -221,6 +299,18 @@ npm run build
 **转出来很平，没有立体感**
 调大「深度强度」，或调小「视场角 FOV」。也可能是原图本身缺少深度线索（比如平面翻拍图）。
 
+**转个角度点云就没了 / 看起来是平的**
+前两种模式的产物本来就是浮雕，只有朝向镜头的一层表面 —— 这是单图深度估计的固有边界，
+不是 bug 也调不出来。想要能转一圈的立体效果，切到 **🧊 生成式 3D 模式**。
+
+**生成式模式出来的东西不像原图 / 形状很怪**
+TripoSR 按"居中的单个物体"训练。风景、街景、多个物体、大场景都不适用 ——
+它不知道该把哪个当主体。换一张主体明确、背景干净的图片试试。
+
+**生成时报显存不足**
+先关掉浏览器等占显存的程序（桌面应用通常已占 1–2GB）。后端已经做了自动降级
+（192 → 160 → 128 → 96），如果降到底还失败，说明可用显存确实太少了。
+
 **导出的 PLY 在 CloudCompare 里是灰的**
 CloudCompare 打开后需要在左侧属性面板把 `Colors` 从 `None` 切到 `RGB`。
 
@@ -233,5 +323,8 @@ CloudCompare 打开后需要在左侧属性面板把 `Colors` 从 `None` 切到 
 | [Depth Anything V2](https://github.com/DepthAnything/Depth-Anything-V2) | 单目深度估计 | Apache 2.0 |
 | [transformers.js](https://github.com/huggingface/transformers.js) | 浏览器端推理运行时 | Apache 2.0 |
 | [three.js](https://github.com/mrdoob/three.js) | 3D 渲染 | MIT |
-| [MoGe](https://github.com/microsoft/MoGe) | 高精度后端（阶段二） | MIT |
+| [MoGe](https://github.com/microsoft/MoGe) | 高精度后端 | MIT |
+| [TripoSR](https://github.com/VAST-AI-Research/TripoSR) | 生成式 3D 后端（源码 vendor 在 `server/tsr/`） | MIT |
+| [rembg](https://github.com/danielgatis/rembg) | 生成前的自动抠图 | MIT |
+| [scikit-image](https://github.com/scikit-image/scikit-image) | marching cubes（替代需编译的 torchmcubes） | BSD-3 |
 | [Vite](https://github.com/vitejs/vite) | 构建工具 | MIT |

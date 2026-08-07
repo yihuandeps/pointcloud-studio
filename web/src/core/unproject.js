@@ -180,6 +180,74 @@ export function buildPointCloud({ depth, width, height, rgba, options }) {
  * 无需视差转换和 FOV 猜测，只做剔除 + 抽稀 + 归一化。
  * 保留同样的返回结构，渲染与导出代码可以完全复用。
  */
+/**
+ * 生成式 3D 模式用：TripoSR 返回的已是三维散点云（three.js 坐标系、带 RGB），
+ * 不与图片像素对齐，只做抽稀 + 归一化。
+ * 服务端是网格表面随机采样，点序天然乱序，取前 N 个就是均匀抽稀。
+ * 保留同样的返回结构，渲染与导出代码可以完全复用。
+ */
+export function buildPointCloudFromCloud({ positions, colors, count, options }) {
+  const { targetPoints = 220000 } = options ?? {};
+  const k = Math.min(count, Math.max(1, Math.floor(targetPoints)));
+  if (!k) throw new Error('点云为空');
+
+  const pos = new Float32Array(k * 3);
+  const col = new Float32Array(k * 3);
+  const dep = new Float32Array(k);
+
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+
+  for (let i = 0; i < k; i++) {
+    const p = i * 3;
+    const X = positions[p];
+    const Y = positions[p + 1];
+    const Z = positions[p + 2];
+    pos[p] = X; pos[p + 1] = Y; pos[p + 2] = Z;
+
+    col[p] = colors[p] / 255;
+    col[p + 1] = colors[p + 1] / 255;
+    col[p + 2] = colors[p + 2] / 255;
+
+    if (X < minX) minX = X; if (X > maxX) maxX = X;
+    if (Y < minY) minY = Y; if (Y > maxY) maxY = Y;
+    if (Z < minZ) minZ = Z; if (Z > maxZ) maxZ = Z;
+  }
+
+  const center = [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2];
+  const extent = Math.max(maxX - minX, maxY - minY, maxZ - minZ) || 1;
+  const scale = CLOUD_WORLD_SIZE / extent;
+
+  for (let i = 0; i < k; i++) {
+    const p = i * 3;
+    pos[p]     = (pos[p]     - center[0]) * scale;
+    pos[p + 1] = (pos[p + 1] - center[1]) * scale;
+    pos[p + 2] = (pos[p + 2] - center[2]) * scale;
+  }
+
+  // 深度属性给色调/动效用：+Z 朝向初始视角，1 = 离观察者最近，与其他模式语义一致
+  const zRange = (maxZ - minZ) || 1;
+  for (let i = 0; i < k; i++) {
+    dep[i] = (pos[i * 3 + 2] / scale + center[2] - minZ) / zRange;
+  }
+
+  return {
+    positions: pos,
+    colors: col,
+    depths: dep,
+    count: k,
+    transform: { center, scale },
+    stats: {
+      step: 1,
+      candidates: count,
+      culledEdge: 0,
+      culledSky: 0,
+      sourceWidth: 0,
+      sourceHeight: 0,
+    },
+  };
+}
+
 export function buildPointCloudFromPointMap({ points, mask, width, height, rgba, options }) {
   const { targetPoints = 220000 } = options ?? {};
   const n = width * height;

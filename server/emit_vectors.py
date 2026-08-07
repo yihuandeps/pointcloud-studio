@@ -14,7 +14,7 @@ import struct
 import sys
 from pathlib import Path
 
-from imaging import fit_size, js_round, pack_result
+from imaging import fit_size, js_round, pack_cloud, pack_result
 
 
 def build_size_cases() -> list[dict]:
@@ -84,6 +84,29 @@ def build_payload(out_dir: Path) -> dict:
     return {"width": width, "height": height, "bytes": len(blob), "header": header}
 
 
+def build_cloud_payload(out_dir: Path) -> dict:
+    """生成式 3D 的散点云包（pack_cloud），Node 端用同公式重算逐值比对。"""
+    count = 977                     # 质数，偏移算错一个元素就全体错位
+
+    positions = bytearray()
+    for i in range(count * 3):
+        positions += struct.pack("<f", ((i * 13) % 251) * 0.02 - 2.5)
+
+    colors = bytes((i * 31 + 7) % 256 for i in range(count * 3))
+
+    header = {
+        "count": count,
+        "model": "stabilityai/TripoSR",
+        "device": "cuda",
+        "ms": 4567,
+    }
+
+    blob = pack_cloud(bytes(positions), colors, header)
+    (out_dir / "cloud_payload.bin").write_bytes(blob)
+
+    return {"count": count, "bytes": len(blob), "header": header}
+
+
 def main():
     out_dir = Path(sys.argv[1] if len(sys.argv) > 1 else ".")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -92,12 +115,14 @@ def main():
         "round": build_round_cases(),
         "fitSize": build_size_cases(),
         "payload": build_payload(out_dir),
+        "cloudPayload": build_cloud_payload(out_dir),
     }
     (out_dir / "vectors.json").write_text(
         json.dumps(data, ensure_ascii=False), encoding="utf-8"
     )
     print(f"round {len(data['round'])} 条, fitSize {len(data['fitSize'])} 条, "
-          f"payload {data['payload']['bytes']} 字节 → {out_dir}")
+          f"payload {data['payload']['bytes']} 字节, "
+          f"cloudPayload {data['cloudPayload']['bytes']} 字节 → {out_dir}")
 
 
 if __name__ == "__main__":

@@ -68,7 +68,15 @@ if ($LASTEXITCODE -ne 0) {
     if ($LASTEXITCODE -ne 0) { Write-Host "依赖补齐失败" -ForegroundColor Red; exit 1 }
 }
 
-Write-Host "`n[3/3] Web 服务" -ForegroundColor Cyan
+Write-Host "`n[3/4] 生成式 3D（TripoSR，源码已 vendor 在 server/tsr/）" -ForegroundColor Cyan
+# 上游 requirements 里的 torchmcubes 是 git+ 源码依赖且要编译 C++，Windows 必坑，
+# vendored 的 tsr 已改用 scikit-image 的 marching_cubes（见 tsr/models/isosurface.py）。
+# transformers 固定 4.46.x：4.35（上游锁定）的 tokenizers 会把 huggingface_hub
+# 拽回 0.17，直接弄坏 MoGe 的权重下载。
+& $vpy -m pip install -i $PYPI omegaconf einops "transformers==4.46.3" trimesh rembg onnxruntime scikit-image imageio
+if ($LASTEXITCODE -ne 0) { Write-Host "TripoSR 依赖安装失败" -ForegroundColor Red; exit 1 }
+
+Write-Host "`n[4/4] Web 服务" -ForegroundColor Cyan
 # httpx 是 FastAPI TestClient 的依赖，test_backend.py 要用
 & $vpy -m pip install -i $PYPI fastapi "uvicorn[standard]" python-multipart httpx
 if ($LASTEXITCODE -ne 0) { Write-Host "FastAPI 安装失败" -ForegroundColor Red; exit 1 }

@@ -26,3 +26,15 @@ pillow
 numpy
 opencv-python
 huggingface_hub
+
+# ---- 生成式 3D 模式（TripoSR，源码 vendor 在 tsr/）----
+# torchmcubes 被刻意排除：git+ 源码依赖且要编译 C++，Windows 必坑，
+# tsr/models/isosurface.py 已改用 scikit-image 的 marching_cubes
+omegaconf
+einops
+transformers==4.46.3  # 4.35（上游锁定）的 tokenizers 会把 huggingface_hub 拽回 0.17，弄坏 MoGe
+trimesh
+rembg                 # 抠背景；u2net.onnx 缓存位置由 U2NET_HOME 控制（start.ps1 指到项目盘）
+onnxruntime           # rembg 的推理运行时（CPU 版即可）
+scikit-image
+imageio               # tsr.utils 顶层 import，实际只有导视频用到

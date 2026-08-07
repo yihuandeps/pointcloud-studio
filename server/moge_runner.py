@@ -58,6 +58,19 @@ class MoGeRunner:
             self.load_seconds = round(time.time() - t0, 2)
             return self.model
 
+    def unload(self):
+        """
+        把模型踢出显存。8GB 卡上 MoGe 和 TripoSR 同时驻留会 OOM，
+        app.py 在两种模式间切换时调这个（见 _switch_to）。
+        """
+        with self._lock:
+            if self.model is None:
+                return False
+            self.model = None
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            return True
+
     # ---------------- 信息 ----------------
 
     def info(self) -> dict:

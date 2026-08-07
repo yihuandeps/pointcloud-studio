@@ -16,6 +16,7 @@ import { execFileSync } from 'node:child_process';
 
 import { fitSize } from '../src/core/imagePrep.js';
 import { parseInferResponse } from '../src/core/depthServer.js';
+import { parseCloudResponse } from '../src/core/gen3dServer.js';
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => {
@@ -141,6 +142,50 @@ console.log('\n[3] 二进制协议往返');
   // 非方形且质数尺寸，行列搞反会立刻炸
   ok('宽高没被交换', width !== height && parsed.width === width,
     `${width}×${height}（质数，行列反了会露馅）`);
+}
+
+/* ---- [3b] 生成式 3D 的散点云协议：Python pack_cloud → JS parseCloudResponse ---- */
+console.log('\n[3b] 散点云协议往返（生成式 3D）');
+{
+  const buf = fs.readFileSync(path.join(OUT, 'cloud_payload.bin'));
+  const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+
+  let parsed;
+  try {
+    parsed = parseCloudResponse(ab);
+    ok('JS 能解析 Python 产出的包', true, `${buf.length} 字节`);
+  } catch (err) {
+    ok('JS 能解析 Python 产出的包', false, err.message);
+    throw err;
+  }
+
+  const { count, header } = V.cloudPayload;
+  ok('点数正确', parsed.count === count, `${parsed.count}（质数，偏移错一个元素就露馅）`);
+  ok('头部元信息完整透传',
+    parsed.meta.model === header.model && parsed.meta.ms === header.ms,
+    `model=${parsed.meta.model} ms=${parsed.meta.ms}`);
+  ok('坐标长度 = count*3', parsed.positions.length === count * 3, `${parsed.positions.length}`);
+  ok('颜色长度 = count*3', parsed.colors.length === count * 3, `${parsed.colors.length}`);
+
+  // 按 Python 里同样的公式重算，逐值比对
+  let pBad = 0;
+  for (let i = 0; i < count * 3; i++) {
+    if (parsed.positions[i] !== Math.fround(((i * 13) % 251) * 0.02 - 2.5)) pBad++;
+  }
+  ok('每一个 float32 都逐位相同', pBad === 0, `不符 ${pBad} 个`);
+
+  let cBad = 0;
+  for (let i = 0; i < count * 3; i++) {
+    if (parsed.colors[i] !== (i * 31 + 7) % 256) cBad++;
+  }
+  ok('颜色逐字节相同', cBad === 0, `不符 ${cBad} 个`);
+
+  const throwsCloud = (b) => {
+    try { parseCloudResponse(b); return false; } catch { return true; }
+  };
+  const truncated = buf.subarray(0, buf.length - 100);
+  ok('数据体被截断 → 抛错',
+    throwsCloud(truncated.buffer.slice(truncated.byteOffset, truncated.byteOffset + truncated.byteLength)));
 }
 
 /* ---- [4] 损坏输入不应静默通过 ---- */

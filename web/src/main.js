@@ -12,7 +12,10 @@ import {
 import { prepareImage, canvasToBlob } from './core/imagePrep.js';
 import { BrowserDepthEngine } from './core/depthBrowser.js';
 import { checkServer, warmupServer, inferOnServer } from './core/depthServer.js';
-import { buildPointCloud, buildPointCloudFromPointMap } from './core/unproject.js';
+import { checkGenServer, warmupGenServer, generateOnServer } from './core/gen3dServer.js';
+import {
+  buildPointCloud, buildPointCloudFromPointMap, buildPointCloudFromCloud,
+} from './core/unproject.js';
 import {
   buildPLY, downloadBlob, timestampName, estimateSize, formatBytes,
 } from './core/plyExport.js';
@@ -102,12 +105,14 @@ modeSel.addEventListener('change', async () => {
 
 /** 切模式时把当前模式下失效的控件置灰，避免用户拖了没反应还以为是 bug。 */
 function applyModeUI() {
-  const isServer = state.mode === 'server';
-  modelRow.style.display = isServer ? 'none' : '';
+  const isBrowser = state.mode === 'browser';
+  modelRow.style.display = isBrowser ? '' : 'none';
   panel.setDisabled(
     BROWSER_ONLY_KEYS,
-    isServer,
-    '高精度模式使用 MoGe 预测的真实内参与米制点图，此参数不参与计算',
+    !isBrowser,
+    state.mode === 'gen3d'
+      ? '生成式 3D 直接输出完整三维形体，与深度图转换相关的参数不参与计算'
+      : '高精度模式使用 MoGe 预测的真实内参与米制点图，此参数不参与计算',
   );
 }
 
@@ -145,6 +150,26 @@ plyFormat.addEventListener('change', updateExportLabel);
 /* ---------------- 引擎状态 ---------------- */
 
 async function refreshEngineBadge() {
+  if (state.mode === 'gen3d') {
+    badge.set('loading', '正在探测本机后端…');
+    const info = await checkGenServer();
+    if (info?.ok) {
+      badge.set('ready', `TripoSR · ${info.device ?? 'cuda'}`);
+      dz.note('生成式 3D 就绪 · 单图生成完整 360° 形体，背面由模型补全（约 10–20 秒）');
+      if (!info.loaded) {
+        badge.set('loading', '正在预热模型…');
+        warmupGenServer().then((r) => {
+          badge.set(r?.ok ? 'ready' : 'error',
+            r?.ok ? `TripoSR · ${r.device ?? ''}`.trim() : '预热失败，首图会较慢');
+        });
+      }
+    } else {
+      badge.set('error', '后端未启动（server/start.ps1）');
+      dz.note('生成式 3D 需要先启动 server/start.ps1；也可以切回浏览器模式');
+    }
+    return;
+  }
+
   if (state.mode === 'server') {
     badge.set('loading', '正在探测本机后端…');
     const info = await checkServer();
@@ -242,7 +267,15 @@ async function rerunInference() {
 async function runInference() {
   const t0 = performance.now();
 
-  if (state.mode === 'server') {
+  if (state.mode === 'gen3d') {
+    status.show('正在生成 3D 形体（含背面补全，约 10–20 秒）…');
+    // 多要一点余量，让「点数」滑杆后续加密时不用重跑模型
+    const res = await generateOnServer(state.preparedBlob, {
+      points: Math.max(600000, params.targetPoints),
+    });
+    state.source = { kind: 'cloud', ...res };
+    badge.set('ready', `TripoSR · ${res.meta?.device ?? 'cuda'}`);
+  } else if (state.mode === 'server') {
     status.show('正在调用本机后端…');
     const res = await inferOnServer(state.preparedBlob, { maxSide: MAX_INPUT_SIDE });
     // 尺寸对不上意味着颜色会整体错位，宁可报错也别默默出一张花图
@@ -285,7 +318,14 @@ function rebuildCloud(replay = false) {
   if (!state.source || !state.image) return;
 
   const t0 = performance.now();
-  const cloud = state.source.kind === 'pointmap'
+  const cloud = state.source.kind === 'cloud'
+    ? buildPointCloudFromCloud({
+        positions: state.source.positions,
+        colors: state.source.colors,
+        count: state.source.count,
+        options: params,
+      })
+    : state.source.kind === 'pointmap'
     ? buildPointCloudFromPointMap({
         points: state.source.points,
         mask: state.source.mask,
