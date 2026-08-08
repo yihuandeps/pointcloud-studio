@@ -54,10 +54,11 @@ export function parseCloudResponse(buf) {
   if (4 + headLen > buf.byteLength) throw new Error('头部长度越界，响应已损坏');
 
   const head = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, headLen)));
-  const { count } = head;
+  const { count, hasNormals, hasAO } = head;
 
   let offset = 4 + headLen;
-  const need = count * 3 * 4 + count * 3;
+  const need = count * 3 * 4 + count * 3
+    + (hasNormals ? count * 3 : 0) + (hasAO ? count : 0);
   if (offset + need > buf.byteLength) {
     throw new Error(`数据体长度不足：需要 ${need} 字节，实际只剩 ${buf.byteLength - offset}`);
   }
@@ -67,8 +68,23 @@ export function parseCloudResponse(buf) {
   offset += count * 3 * 4;
 
   const colors = new Uint8Array(buf.slice(offset, offset + count * 3));
+  offset += count * 3;
 
-  return { positions, colors, count, meta: head };
+  // 法线用 int8 存的（各分量 ×127），着色前还原成单位向量
+  let normals = null;
+  if (hasNormals) {
+    normals = new Int8Array(buf.slice(offset, offset + count * 3));
+    offset += count * 3;
+  }
+
+  // 凹陷度：0=深凹（要压暗），255=开阔
+  let ao = null;
+  if (hasAO) {
+    ao = new Uint8Array(buf.slice(offset, offset + count));
+    offset += count;
+  }
+
+  return { positions, colors, normals, ao, count, meta: head };
 }
 
 /**

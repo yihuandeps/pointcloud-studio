@@ -24,6 +24,7 @@ import torch
 from PIL import Image
 
 import bg_removal
+import surface
 
 DEFAULT_MODEL = os.environ.get("HUNYUAN_MODEL", "tencent/Hunyuan3D-2mv")
 # turbo 是步数蒸馏版，5 步即可（标准版要 50 步）。想要更高质量换 hunyuan3d-dit-v2-mv
@@ -335,12 +336,14 @@ class HunyuanRunner:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        # 3) 表面采样。法线取所在面的法线，用来决定从哪张图取色
+        # 3) 表面采样。法线取所在面的法线：既用来决定从哪张图取色，
+        #    也随点云一起送到前端做光照 —— 没有法线就没有明暗，形体看着是平的
         samples, face_idx = trimesh.sample.sample_surface(mesh, n_points)
-        normals = np.asarray(mesh.face_normals)[face_idx]
+        normals = surface.sample_normals(mesh, face_idx)
 
         views = [_View(name, img) for name, img in ordered.items()]
         colors = self._sample_colors(np.asarray(samples), normals, views)
+        ao = surface.estimate_ao(np.asarray(samples), normals)
 
         # 4) Hunyuan3D 是 Y 朝上、正面 +Z，与 three.js 一致，不用换轴
         pts = np.asarray(samples, dtype=np.float32)
@@ -350,6 +353,8 @@ class HunyuanRunner:
         return {
             "positions": np.ascontiguousarray(pts, dtype=np.float32),
             "colors": np.ascontiguousarray(colors, dtype=np.uint8),
+            "normals": np.ascontiguousarray(surface.pack_normals(normals)),
+            "ao": np.ascontiguousarray(ao),
             "count": int(len(pts)),
             "resolution": used_octree,
             "viewsUsed": list(ordered),

@@ -93,18 +93,30 @@ def build_cloud_payload(out_dir: Path) -> dict:
         positions += struct.pack("<f", ((i * 13) % 251) * 0.02 - 2.5)
 
     colors = bytes((i * 31 + 7) % 256 for i in range(count * 3))
+    # 法线是 int8（各分量 ×127），凹陷度是 uint8
+    normals = bytes((((i * 17 + 5) % 255) - 127) & 0xFF for i in range(count * 3))
+    ao = bytes((i * 43 + 11) % 256 for i in range(count))
 
     header = {
         "count": count,
         "model": "stabilityai/TripoSR",
         "device": "cuda",
+        "hasNormals": True,
+        "hasAO": True,
         "ms": 4567,
     }
 
-    blob = pack_cloud(bytes(positions), colors, header)
+    blob = pack_cloud(bytes(positions), colors, header, normals, ao)
     (out_dir / "cloud_payload.bin").write_bytes(blob)
 
-    return {"count": count, "bytes": len(blob), "header": header}
+    # 不带法线/AO 的老式包也要留一份，确认可选段真的是可选的
+    bare_header = {k: v for k, v in header.items()
+                   if k not in ("hasNormals", "hasAO")}
+    bare = pack_cloud(bytes(positions), colors, bare_header)
+    (out_dir / "cloud_payload_bare.bin").write_bytes(bare)
+
+    return {"count": count, "bytes": len(blob), "bareBytes": len(bare),
+            "header": header}
 
 
 def main():

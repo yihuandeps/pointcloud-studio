@@ -62,6 +62,11 @@ export class PointCloudObject {
         uOpacity: { value: 0.95 },
         uSoftness: { value: 0.18 },
         uSolid: { value: 0 },
+        uLight: { value: 0.85 },
+        uAmbient: { value: 0.32 },
+        uSpecular: { value: 0.25 },
+        uAOStrength: { value: 0.8 },
+        uHasNormals: { value: 0 },
       },
     });
   }
@@ -76,6 +81,17 @@ export class PointCloudObject {
     g.setAttribute('aDepth', new THREE.BufferAttribute(cloud.depths, 1));
     g.setAttribute('aScatter', new THREE.BufferAttribute(makeScatter(cloud.count), 3));
     g.setAttribute('aSeed', new THREE.BufferAttribute(makeSeeds(cloud.count), 1));
+
+    // 法线和凹陷度决定光照。深度类点云暂时没有，属性仍要建（GLSL 里 attribute
+    // 必须存在），填 0 并把 uHasNormals 关掉，着色器会走回平涂那条路。
+    const hasN = !!cloud.normals;
+    g.setAttribute('aNormal', new THREE.BufferAttribute(
+      cloud.normals ?? new Float32Array(cloud.count * 3), 3,
+    ));
+    g.setAttribute('aAO', new THREE.BufferAttribute(
+      cloud.ao ?? new Float32Array(cloud.count).fill(1), 1,
+    ));
+    this.material.uniforms.uHasNormals.value = hasN ? 1 : 0;
     // 点云是散点，包围球自己算比让 three 遍历更省事
     g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 3.2);
 
@@ -101,6 +117,11 @@ export class PointCloudObject {
     u.uNoiseFreq.value = p.noiseFreq;
     u.uRepelRadius.value = p.repelRadius;
     u.uRepelStrength.value = p.repelStrength;
+
+    u.uLight.value = p.light ?? 0.85;
+    u.uAmbient.value = p.ambient ?? 0.32;
+    u.uSpecular.value = p.specular ?? 0.25;
+    u.uAOStrength.value = p.aoStrength ?? 0.8;
 
     const solid = p.solidMode ? 1 : 0;
     u.uSolid.value = solid;

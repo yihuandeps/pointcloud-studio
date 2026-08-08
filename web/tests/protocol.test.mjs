@@ -180,12 +180,34 @@ console.log('\n[3b] 散点云协议往返（生成式 3D）');
   }
   ok('颜色逐字节相同', cBad === 0, `不符 ${cBad} 个`);
 
+  // 法线：Python 按 (i*17+5)%255-127 写入 int8
+  let nBad = 0;
+  for (let i = 0; i < count * 3; i++) {
+    if (parsed.normals[i] !== ((i * 17 + 5) % 255) - 127) nBad++;
+  }
+  ok('法线逐字节相同（int8）', nBad === 0, `不符 ${nBad} 个`);
+
+  let aBad = 0;
+  for (let i = 0; i < count; i++) if (parsed.ao[i] !== (i * 43 + 11) % 256) aBad++;
+  ok('凹陷度逐字节相同（uint8）', aBad === 0, `不符 ${aBad} 个`);
+
   const throwsCloud = (b) => {
     try { parseCloudResponse(b); return false; } catch { return true; }
   };
   const truncated = buf.subarray(0, buf.length - 100);
   ok('数据体被截断 → 抛错',
     throwsCloud(truncated.buffer.slice(truncated.byteOffset, truncated.byteOffset + truncated.byteLength)));
+
+  // 可选段真的是可选的：老式包（无 hasNormals/hasAO）必须照样解得开
+  const bareBuf = fs.readFileSync(path.join(OUT, 'cloud_payload_bare.bin'));
+  const bareParsed = parseCloudResponse(
+    bareBuf.buffer.slice(bareBuf.byteOffset, bareBuf.byteOffset + bareBuf.byteLength),
+  );
+  ok('不带法线/AO 的包也能解析', bareParsed.count === count);
+  ok('缺失的可选段解析为 null',
+    bareParsed.normals === null && bareParsed.ao === null);
+  ok('可选段确实占了额外字节', buf.length > bareBuf.length,
+    `${bareBuf.length} → ${buf.length}（+${buf.length - bareBuf.length}）`);
 }
 
 /* ---- [4] 损坏输入不应静默通过 ---- */

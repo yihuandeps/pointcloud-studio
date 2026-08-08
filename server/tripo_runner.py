@@ -23,6 +23,8 @@ import numpy as np
 import torch
 from PIL import Image
 
+import surface
+
 DEFAULT_MODEL = os.environ.get("TRIPO_MODEL", "stabilityai/TripoSR")
 # marching cubes 的体素分辨率。256³ 要查询 1677 万个点，8GB 卡上（还要和桌面
 # 应用抢显存）很容易 OOM，实测 192 是画质与稳定性的平衡点；OOM 时按 FALLBACK
@@ -213,8 +215,11 @@ class TripoRunner:
         cols = (vc[mesh.faces[face_idx]] * bary[:, :, None]).sum(axis=1)
 
         # 4) TSR 世界是 z 朝上、条件相机在 +x 轴；three.js 是 y 朝上、相机看向 -Z。
-        #    (x,y,z) → (y,z,x) 是行列式 +1 的纯旋转，且让生成物正面朝向初始视角
+        #    (x,y,z) → (y,z,x) 是行列式 +1 的纯旋转，且让生成物正面朝向初始视角。
+        #    法线是方向量，必须跟着做同一个置换 —— 漏了这步光照会整体错乱。
         pts = samples[:, [1, 2, 0]].astype(np.float32)
+        normals = np.asarray(mesh.face_normals)[face_idx][:, [1, 2, 0]]
+        ao = surface.estimate_ao(pts, normals)
 
         ms = int((time.time() - t0) * 1000)
 
@@ -223,6 +228,8 @@ class TripoRunner:
             "colors": np.ascontiguousarray(
                 np.clip(cols, 0, 255).astype(np.uint8)
             ),
+            "normals": np.ascontiguousarray(surface.pack_normals(normals)),
+            "ao": np.ascontiguousarray(ao),
             "count": int(len(pts)),
             "resolution": used_resolution,
             "ms": ms,

@@ -87,6 +87,18 @@ export function buildPointCloud({ depth, width, height, rgba, options }) {
   const pos = new Float32Array(cap * 3);
   const col = new Float32Array(cap * 3);
   const dep = new Float32Array(cap);
+  // 法线：光照的原料。深度图是规则网格，取右邻和下邻反投影后叉积即可，
+  // 比在散点上做 kNN 便宜得多
+  const nrm = new Float32Array(cap * 3);
+
+  /** 把像素 (u,v) 反投影成三维点，越界或无深度返回 null。 */
+  const unprojectAt = (u, v) => {
+    if (u < 0 || u >= width || v < 0 || v >= height) return null;
+    const dd = dn[v * width + u];
+    if (!(dd > 0)) return null;
+    const z = disparityToDepth(dd, invNear, invFar);
+    return [((u - cx) * z) / fx, -((v - cy) * z) / fy, -z];
+  };
 
   let k = 0;
   let culledEdge = 0;
@@ -126,6 +138,29 @@ export function buildPointCloud({ depth, width, height, rgba, options }) {
       const p = k * 3;
       pos[p] = X; pos[p + 1] = Y; pos[p + 2] = Z;
 
+      // 右邻与下邻的差向量叉积 = 表面法线。任一邻居缺失就退化成正对相机，
+      // 这类点在边缘上，给个合理默认比让它黑掉强
+      const pu = unprojectAt(u + nb, v);
+      const pv = unprojectAt(u, v + nb);
+      if (pu && pv) {
+        const ax = pu[0] - X, ay = pu[1] - Y, az = pu[2] - Z;
+        const bx = pv[0] - X, by = pv[1] - Y, bz = pv[2] - Z;
+        let nx = ay * bz - az * by;
+        let ny = az * bx - ax * bz;
+        let nz = ax * by - ay * bx;
+        const len = Math.hypot(nx, ny, nz);
+        if (len > 1e-9) {
+          nx /= len; ny /= len; nz /= len;
+          // 相机在 +Z 看向 -Z，法线一律翻到朝向相机那一侧
+          if (nz < 0) { nx = -nx; ny = -ny; nz = -nz; }
+          nrm[p] = nx; nrm[p + 1] = ny; nrm[p + 2] = nz;
+        } else {
+          nrm[p + 2] = 1;
+        }
+      } else {
+        nrm[p + 2] = 1;
+      }
+
       const c = idx * 4;
       col[p] = rgba[c] / 255;
       col[p + 1] = rgba[c + 1] / 255;
@@ -161,6 +196,8 @@ export function buildPointCloud({ depth, width, height, rgba, options }) {
     positions: pos.subarray(0, k * 3),
     colors: col.subarray(0, k * 3),
     depths: dep.subarray(0, k),
+    normals: nrm.subarray(0, k * 3),
+    ao: null,   // 浮雕没有真正的凹陷遮蔽，不编造
     count: k,
     // 导出时若要还原原始（高精度模式下即米制）坐标：orig = p / scale + center
     transform: { center, scale },
@@ -186,7 +223,9 @@ export function buildPointCloud({ depth, width, height, rgba, options }) {
  * 服务端是网格表面随机采样，点序天然乱序，取前 N 个就是均匀抽稀。
  * 保留同样的返回结构，渲染与导出代码可以完全复用。
  */
-export function buildPointCloudFromCloud({ positions, colors, count, options }) {
+export function buildPointCloudFromCloud({
+  positions, colors, normals = null, ao = null, count, options,
+}) {
   const { targetPoints = 220000 } = options ?? {};
   const k = Math.min(count, Math.max(1, Math.floor(targetPoints)));
   if (!k) throw new Error('点云为空');
@@ -194,6 +233,9 @@ export function buildPointCloudFromCloud({ positions, colors, count, options }) 
   const pos = new Float32Array(k * 3);
   const col = new Float32Array(k * 3);
   const dep = new Float32Array(k);
+  // 法线和凹陷度是光照的原料，抽稀时必须跟着一起取，否则会和坐标对不上
+  const nrm = normals ? new Float32Array(k * 3) : null;
+  const occ = ao ? new Float32Array(k) : null;
 
   let minX = Infinity, minY = Infinity, minZ = Infinity;
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
@@ -208,6 +250,14 @@ export function buildPointCloudFromCloud({ positions, colors, count, options }) 
     col[p] = colors[p] / 255;
     col[p + 1] = colors[p + 1] / 255;
     col[p + 2] = colors[p + 2] / 255;
+
+    if (nrm) {
+      // int8 存的是 ×127 的分量，还原回 [-1,1]
+      nrm[p] = normals[p] / 127;
+      nrm[p + 1] = normals[p + 1] / 127;
+      nrm[p + 2] = normals[p + 2] / 127;
+    }
+    if (occ) occ[i] = ao[i] / 255;
 
     if (X < minX) minX = X; if (X > maxX) maxX = X;
     if (Y < minY) minY = Y; if (Y > maxY) maxY = Y;
@@ -235,6 +285,8 @@ export function buildPointCloudFromCloud({ positions, colors, count, options }) 
     positions: pos,
     colors: col,
     depths: dep,
+    normals: nrm,
+    ao: occ,
     count: k,
     transform: { center, scale },
     stats: {
@@ -258,11 +310,26 @@ export function buildPointCloudFromPointMap({ points, mask, width, height, rgba,
   const pos = new Float32Array(cap * 3);
   const col = new Float32Array(cap * 3);
   const dep = new Float32Array(cap);
+  const nrm = new Float32Array(cap * 3);
 
   let k = 0;
   let minX = Infinity, minY = Infinity, minZ = Infinity;
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
   let zMin = Infinity, zMax = -Infinity;
+
+  const nb = Math.max(1, Math.round(step));
+  /** 点图取点并转成 three.js 坐标系；越界、无效或被 mask 排除返回 null。 */
+  const at = (u, v) => {
+    if (u < 0 || u >= width || v < 0 || v >= height) return null;
+    const i = v * width + u;
+    if (mask && !mask[i]) return null;
+    const s = i * 3;
+    const X = points[s];
+    const Y = -points[s + 1];
+    const Z = -points[s + 2];
+    if (!Number.isFinite(X) || !Number.isFinite(Y) || !Number.isFinite(Z)) return null;
+    return [X, Y, Z];
+  };
 
   for (let fv = 0; fv < height; fv += step) {
     const v = Math.floor(fv);
@@ -279,6 +346,27 @@ export function buildPointCloudFromPointMap({ points, mask, width, height, rgba,
 
       const p = k * 3;
       pos[p] = X; pos[p + 1] = Y; pos[p + 2] = Z;
+
+      // 点图是规则网格上的真实三维点，右邻下邻直接叉积即得法线
+      const pu = at(u + nb, v);
+      const pv = at(u, v + nb);
+      if (pu && pv) {
+        const ax = pu[0] - X, ay = pu[1] - Y, az = pu[2] - Z;
+        const bx = pv[0] - X, by = pv[1] - Y, bz = pv[2] - Z;
+        let nx = ay * bz - az * by;
+        let ny = az * bx - ax * bz;
+        let nz = ax * by - ay * bx;
+        const len = Math.hypot(nx, ny, nz);
+        if (len > 1e-9) {
+          nx /= len; ny /= len; nz /= len;
+          if (nz < 0) { nx = -nx; ny = -ny; nz = -nz; }
+          nrm[p] = nx; nrm[p + 1] = ny; nrm[p + 2] = nz;
+        } else {
+          nrm[p + 2] = 1;
+        }
+      } else {
+        nrm[p + 2] = 1;
+      }
 
       const c = idx * 4;
       col[p] = rgba[c] / 255;
@@ -318,6 +406,8 @@ export function buildPointCloudFromPointMap({ points, mask, width, height, rgba,
     positions: pos.subarray(0, k * 3),
     colors: col.subarray(0, k * 3),
     depths: dep.subarray(0, k),
+    normals: nrm.subarray(0, k * 3),
+    ao: null,   // 浮雕没有真正的凹陷遮蔽，不编造
     count: k,
     transform: { center, scale },
     stats: {

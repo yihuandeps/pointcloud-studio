@@ -491,6 +491,8 @@ function rebuildCloud(replay = false) {
     ? buildPointCloudFromCloud({
         positions: state.source.positions,
         colors: state.source.colors,
+        normals: state.source.normals,
+        ao: state.source.ao,
         count: state.source.count,
         options: params,
       })

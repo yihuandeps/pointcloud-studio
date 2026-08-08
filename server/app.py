@@ -162,8 +162,12 @@ def generate(image: UploadFile = File(...), points: str = Form(default="")):
                 "model": result["model"],
                 "device": result["device"],
                 "resolution": result["resolution"],
+                "hasNormals": True,
+                "hasAO": True,
                 "ms": result["ms"],
             },
+            result["normals"].tobytes(),
+            result["ao"].tobytes(),
         )
         return Response(content=body, media_type="application/octet-stream")
 
@@ -237,8 +241,12 @@ async def mv_generate(
                 "resolution": result["resolution"],
                 "viewsUsed": result["viewsUsed"],
                 "warnings": result["warnings"],
+                "hasNormals": True,
+                "hasAO": True,
                 "ms": result["ms"],
             },
+            result["normals"].tobytes(),
+            result["ao"].tobytes(),
         )
         return Response(content=body, media_type="application/octet-stream")
 

@@ -112,6 +112,31 @@ export const PARAM_SCHEMA = [
         hint: '开 = 写深度缓冲，遮挡关系正确，像真实点云；关 = 云雾感，通透飘逸。',
       },
       {
+        key: 'light', label: '光照强度', type: 'range',
+        min: 0, max: 1, step: 0.01, value: 0.85,
+        format: (v) => Math.round(v * 100) + '%',
+        hint: '0 = 平涂（每点只画自己的颜色，看着是平的）。'
+            + '开大才有明暗，形体的立体感主要来自这里。仅对带法线的点云有效。',
+      },
+      {
+        key: 'aoStrength', label: '凹陷增强', type: 'range',
+        min: 0, max: 1, step: 0.01, value: 0.8,
+        format: (v) => Math.round(v * 100) + '%',
+        hint: '把褶皱、缝隙、凹坑压暗。调大更有体积感和真实感，过大会显脏。',
+      },
+      {
+        key: 'specular', label: '高光', type: 'range',
+        min: 0, max: 1, step: 0.01, value: 0.25,
+        format: (v) => Math.round(v * 100) + '%',
+        hint: '表面反光。调大偏塑料/陶瓷质感，调到 0 是纯哑光。',
+      },
+      {
+        key: 'ambient', label: '环境光', type: 'range',
+        min: 0, max: 0.8, step: 0.01, value: 0.32,
+        format: (v) => Math.round(v * 100) + '%',
+        hint: '背光面的亮度下限。调小对比更强更硬，调大更柔和但会削弱立体感。',
+      },
+      {
         key: 'tint', label: '色调', type: 'select', value: 'origin',
         options: [
           { v: 'origin', label: '原图色彩' },

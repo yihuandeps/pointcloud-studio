@@ -78,6 +78,8 @@ attribute vec3  color;      // 原图 RGB（three 只自带 position/normal/uv�
 attribute vec3  aScatter;   // 入场动画的起始散开位置
 attribute float aSeed;      // 每点随机种子，错开噪声相位
 attribute float aDepth;     // 归一化深度 0..1（1=最近），用于深度配色
+attribute vec3  aNormal;    // 表面法线，光照用；没有法线的点云这里全是 0
+attribute float aAO;        // 凹陷度 0..1（0=深凹），用来压暗褶皱和缝隙
 
 uniform float uTime;
 uniform float uProgress;        // 0→1 聚合进度
@@ -92,6 +94,12 @@ uniform float uRepelStrength;
 uniform int   uTint;            // 0=原图 1=深度渐变 2=单色霓虹 3=原图×深度
 uniform vec3  uTintA;           // 远端色
 uniform vec3  uTintB;           // 近端色
+
+uniform float uLight;           // 光照强度 0=平涂（旧行为）
+uniform float uAmbient;         // 环境光下限，防止背光面死黑
+uniform float uSpecular;        // 高光强度
+uniform float uAOStrength;      // 凹陷压暗强度
+uniform float uHasNormals;      // 1=这份点云带法线
 
 varying vec3  vColor;
 varying float vFade;
@@ -134,6 +142,38 @@ void main() {
   vFade = t;
 
   vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+
+  /* ---- 光照 ----
+     点云默认是平涂的：每个点直接画自己的颜色，没有任何明暗变化。
+     没有明暗，人眼就读不出表面朝向，再准确的三维形体看起来也是平的。
+     所以这里按法线做一遍着色 —— 立体感和凹陷感主要来自这一段。
+
+     算在顶点着色器里：每个点只算一次，而不是每个片元算一次。
+     点精灵通常只有几个像素，逐片元算纯属浪费。 */
+  if (uHasNormals > 0.5 && uLight > 0.0) {
+    // 法线跟着模型一起进相机空间。点云只做刚体变换，用 normalMatrix 是安全的
+    vec3 N = normalize(normalMatrix * aNormal);
+    // 相机空间里定光，这样转模型时光跟着看的人走，始终能看清结构
+    vec3 L = normalize(vec3(-0.45, 0.75, 0.85));
+    vec3 V = normalize(-mv.xyz);
+    vec3 H = normalize(L + V);
+
+    // 双面：点云没有正反之分，背对光的面翻过来照，否则整片死黑
+    float ndl = abs(dot(N, L));
+    float diffuse = uAmbient + (1.0 - uAmbient) * ndl;
+
+    // Blinn-Phong 高光，给一点"真实材质"的反光
+    float spec = pow(max(dot(N, H), 0.0), 48.0) * uSpecular;
+
+    // 边缘光：勾出轮廓，让形体从背景里跳出来
+    float rim = pow(1.0 - abs(dot(N, V)), 3.0) * 0.35;
+
+    // 凹陷压暗。aAO 越小越凹，uAOStrength 控制压多狠
+    float ao = mix(1.0, aAO, uAOStrength);
+
+    vColor = vColor * mix(1.0, diffuse * ao, uLight)
+           + vec3(spec + rim * uLight);
+  }
   // uSizeScale = 参考视距，使得 uSize 的单位就是「默认视距下的 CSS 像素」。
   // 再乘 dpr 换算到设备像素。上限 64 防止贴到镜头前时点撑爆（WebGL 有实现上限）。
   gl_PointSize = clamp(uSize * uPixelRatio * (uSizeScale / max(0.001, -mv.z)), 1.0, 64.0);

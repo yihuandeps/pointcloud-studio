@@ -34,21 +34,31 @@ def fit_size(w: int, h: int, max_side: int) -> tuple[int, int]:
     return max(1, js_round(w * k)), max(1, js_round(h * k))
 
 
-def pack_cloud(positions_bytes: bytes, colors_bytes: bytes, header: dict) -> bytes:
+def pack_cloud(positions_bytes: bytes, colors_bytes: bytes, header: dict,
+               normals_bytes: bytes = b"", ao_bytes: bytes = b"") -> bytes:
     """
     生成式 3D 模式的点云包，与 pack_result 同族的紧凑二进制：
 
         [0..3]      uint32 LE   头部 JSON 字节长度 L
-        [4..4+L)    UTF-8 JSON  { count, model, device, ms }
+        [4..4+L)    UTF-8 JSON  { count, model, device, ms, hasNormals, hasAO }
         接着        float32[count*3]  XYZ（three.js 坐标系，y 朝上）
         再接着      uint8[count*3]    RGB
+        hasNormals  int8[count*3]     法线，各分量 ×127
+        hasAO       uint8[count]      凹陷度，0=深凹 255=开阔
+
+    后两段可选，由头部的 hasNormals / hasAO 决定在不在、按这个顺序排。
+    法线用 int8 是刻意的：着色只要方向，0.9° 的精度足够，
+    比 float32 省 4 倍带宽（60 万点差 5MB）。
 
     布局必须与 web/src/core/gen3dServer.js 的解析逻辑一致。
     """
     head = json.dumps(header, ensure_ascii=False).encode("utf-8")
-    return b"".join(
-        [struct.pack("<I", len(head)), head, positions_bytes, colors_bytes]
-    )
+    parts = [struct.pack("<I", len(head)), head, positions_bytes, colors_bytes]
+    if header.get("hasNormals"):
+        parts.append(normals_bytes)
+    if header.get("hasAO"):
+        parts.append(ao_bytes)
+    return b"".join(parts)
 
 
 def pack_result(points_bytes: bytes, mask_bytes: bytes, header: dict) -> bytes:

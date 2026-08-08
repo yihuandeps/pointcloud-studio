@@ -257,6 +257,36 @@ console.log('\n[9] 异常输入');
   ok('全平深度图不崩溃（除零保护）', c.count > 0 && Number.isFinite(c.positions[0]), `${c.count} 点`);
 }
 
+console.log('\n[9b] 法线（光照的原料，没有它形体看着是平的）');
+{
+  const c = buildPointCloud({ depth, width: W, height: H, rgba, options: noCull });
+  ok('输出了法线数组', !!c.normals && c.normals.length === c.count * 3,
+    `${c.normals?.length}`);
+
+  let bad = 0, backFacing = 0, minLen = Infinity, maxLen = -Infinity;
+  for (let i = 0; i < c.count; i++) {
+    const p = i * 3;
+    const len = Math.hypot(c.normals[p], c.normals[p + 1], c.normals[p + 2]);
+    if (!Number.isFinite(len)) bad++;
+    if (len < minLen) minLen = len;
+    if (len > maxLen) maxLen = len;
+    // 相机在 +Z，可见表面的法线必须朝向相机
+    if (c.normals[p + 2] < 0) backFacing++;
+  }
+  ok('全部是单位向量', bad === 0 && Math.abs(minLen - 1) < 1e-5 && Math.abs(maxLen - 1) < 1e-5,
+    `模长 ${minLen.toFixed(6)}–${maxLen.toFixed(6)}`);
+  ok('法线一律朝向相机（+Z）', backFacing === 0, `背向 ${backFacing} 个`);
+
+  // 球面上的法线应当随位置发散；若整片都指向同一方向，说明叉积算错了
+  let sx = 0, sy = 0;
+  for (let i = 0; i < c.count; i++) { sx += c.normals[i * 3]; sy += c.normals[i * 3 + 1]; }
+  const meanXY = Math.hypot(sx / c.count, sy / c.count);
+  ok('法线有朝向变化（不是整片朝同一方向）', meanXY < 0.55,
+    `横向分量均值 ${meanXY.toFixed(3)}`);
+
+  ok('浮雕不编造凹陷遮蔽', c.ao === null);
+}
+
 console.log('\n[10] 性能');
 {
   const t0 = performance.now();
