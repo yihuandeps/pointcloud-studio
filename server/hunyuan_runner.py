@@ -238,12 +238,18 @@ class HunyuanRunner:
             acc[filled] / wsum[filled][:, None], 0, 255
         ).astype(np.uint8)
 
-        # 兜底一：掠射角下投影落到剪影外的点，放宽符号取最接近的视图
+        # 兜底一：掠射角下投影落到剪影外的点，放宽符号取最接近的视图。
+        #
+        # 但只放宽到"擦边"为止（facing > -0.35，约 110° 以内）。完全背对所有视图的点
+        # 绝不能这样采 —— 只给一张正面图时，后脑勺对正面的 facing 接近 -1，
+        # 无限制放宽会把那张脸原样投影到后脑勺上（实测确实如此，背面长出一张脸）。
+        # 这类点交给兜底二，从空间最近的已着色点取，拿到的是轮廓边缘的颜色，合理得多。
+        GRAZE_FLOOR = -0.35
         todo = ~filled
         if todo.any():
             best = np.argmax(facing, axis=1)
             for k, view in enumerate(views):
-                sel = np.flatnonzero(todo & (best == k))
+                sel = np.flatnonzero(todo & (best == k) & (facing[:, k] > GRAZE_FLOOR))
                 if len(sel) == 0:
                     continue
                 px, py, hit = projected[k]
