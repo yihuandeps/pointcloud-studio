@@ -183,9 +183,10 @@ plyFormat.addEventListener('change', updateExportLabel);
  * 跟他说「去跑 server/start.ps1」等于没说，所以要讲清楚这是本机功能。
  */
 const BACKEND_HINT = (name) =>
-  `${name}需要在你自己的电脑上跑一个本机服务（Python + GPU），` +
-  '这个网页版提供不了。想用的话按仓库 README 装好后运行 server/start.ps1；' +
-  '否则请用「⚡ 浏览器」模式，它完全在本页面里跑。';
+  `${name}要在你自己的电脑上跑一个本机服务（Python + GPU），纯网页版提供不了。`
+  + '启用方法：终端里跑 server\\start.ps1，再跑 web 目录的 npm run dev，'
+  + '打开 http://127.0.0.1:5173 —— 后端一起来，这里展开下拉就会自动解除标注。'
+  + '不想装的话用「⚡ 浏览器」模式，它完全在本页面里跑。';
 
 /** 需要本机 Python 后端的三种模式。浏览器模式完全在页面里跑，不在此列。 */
 const BACKEND_MODES = ['server', 'gen3d', 'mv'];
@@ -193,9 +194,9 @@ const BACKEND_MODES = ['server', 'gen3d', 'mv'];
 /**
  * 探测后端，据此标注引擎下拉里的本机模式。
  *
- * 线上是纯静态托管，永远不会有后端 —— 那三个模式在那里**结构上就不可能可用**。
- * 与其让人选中之后才撞上一句「需要本机后端」，不如在选项上先写清楚并禁用。
- * 保留选项而不是删掉：让人知道这个工具还能做什么，只是得在本机跑。
+ * **只标注，不禁用。** 曾经把探测不到后端的模式设成 disabled，想着"提前告知"，
+ * 结果是用户连点都点不了 —— 既看不到这个模式到底是什么，也拿不到怎么启用的说明。
+ * 标注解决的是"点下去才知道"，禁用解决的是别的问题，这里不该用它。
  */
 async function markBackendModes() {
   const alive = !!(await checkServer(1500));
@@ -203,7 +204,7 @@ async function markBackendModes() {
     const opt = modeSel.querySelector(`option[value="${m}"]`);
     if (!opt) continue;
     if (!opt.dataset.label) opt.dataset.label = opt.textContent;
-    opt.disabled = !alive;
+    opt.disabled = false;
     opt.textContent = alive ? opt.dataset.label : `${opt.dataset.label} · 需本机运行`;
   }
   return alive;
