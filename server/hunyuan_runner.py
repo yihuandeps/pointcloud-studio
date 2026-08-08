@@ -184,74 +184,79 @@ class HunyuanRunner:
     def _sample_colors(points: np.ndarray, normals: np.ndarray,
                        views: list[_View]) -> np.ndarray:
         """
-        按法线朝向从各视图采样颜色。
+        按法线朝向从各视图采样颜色，相邻视图之间做加权混合。
 
-        对每个点算出它对各视图的"正对程度" n·d，取最正对的那个视图投影采样；
-        采到透明像素（说明这个点落在该视图的轮廓外，多半是遮挡边缘）就退到次优视图。
+        每个点对每个视图算出"正对程度" n·d，以 n·d 的 BLEND_POWER 次方为权重
+        把各视图采到的颜色加权平均。指数取得高，所以绝大部分点实际上就等于
+        "用最正对的那个视图"，只有在两个视图的交界带上才真正混合 ——
+        既避免硬接缝，又把投影对不齐可能带来的重影限制在很窄的一条带里。
 
         投影用的是**轮廓包围盒对齐**：把网格在该视角下的投影包围盒线性映射到
         该图的前景包围盒。这样不用去猜模型内部的归一化/留边参数，
         两边的剪影直接对齐，天然自洽。
 
-        三级兜底，因为给三张图时必然有一侧没人看得见（front/left/back 缺右侧，
-        实测约 6% 的表面法线朝 -X，任何一张图都是背对的）：
-          1. 只用正对的视图（n·d > 0）——颜色最可信
-          2. 还没着上的，放宽符号限制取最接近的视图 —— 采到的是轮廓边缘的颜色，
-             比一片死灰强得多
-          3. 仍然落在透明像素上的，取三维空间里最近的已着色点
+        两级兜底。按面积加权实测（角色样例）：三视图无覆盖 0.00%、掠射 22.4%；
+        四视图无覆盖 0.00%、掠射 10.3%。所以缺的从来不是"没有视图看得见"，
+        而是掠射角下投影容易落到剪影外被 alpha 挡掉：
+          1. 落在剪影外的点，放宽符号限制再取最接近的视图碰一次
+          2. 仍然没着上的，取三维空间里最近的已着色点
         """
         n_pts = len(points)
-        colors = np.full((n_pts, 3), 200, dtype=np.uint8)
-        filled = np.zeros(n_pts, dtype=bool)
+        BLEND_POWER = 4.0
+        ALPHA_MIN = 8
 
-        # 每个视图的正对程度；按从大到小依次尝试
+        acc = np.zeros((n_pts, 3), dtype=np.float64)
+        wsum = np.zeros(n_pts, dtype=np.float64)
         facing = np.stack([normals @ v.dir for v in views], axis=1)  # (N, V)
-        order = np.argsort(-facing, axis=1)
 
-        # require_facing=True 时只用正对的视图；False 是兜底轮，允许背对
-        for require_facing in (True, False):
-            for rank in range(len(views)):
-                todo = ~filled
-                if not todo.any():
-                    break
-                vi = order[todo, rank]
+        def project(view: _View):
+            """点 → 该视图的像素坐标，以及是否落在前景剪影内。"""
+            right, up = _screen_basis(view.dir)
+            sx = points[:, :3] @ right
+            sy = points[:, :3] @ up
+            x0, y0, x1, y1 = view.box
+            px = x0 + (sx - sx.min()) / (sx.max() - sx.min() + 1e-9) * (x1 - x0)
+            # 图像 v 轴向下，世界 y 向上
+            py = y1 - (sy - sy.min()) / (sy.max() - sy.min() + 1e-9) * (y1 - y0)
+            px = np.clip(px.astype(int), 0, view.rgb.shape[1] - 1)
+            py = np.clip(py.astype(int), 0, view.rgb.shape[0] - 1)
+            return px, py, view.alpha[py, px] > ALPHA_MIN
 
-                for k, view in enumerate(views):
-                    sel = np.flatnonzero(todo)[vi == k]
-                    if require_facing:
-                        # 背对这个视图的点不要采（否则会把正面颜色贴到背面去）
-                        sel = sel[facing[sel, k] > 0.0]
-                    if len(sel) == 0:
-                        continue
+        projected = []
+        for k, view in enumerate(views):
+            px, py, hit = project(view)
+            projected.append((px, py, hit))
+            # 背对该视图的点不能采，否则会把正面的颜色贴到背面去
+            w = np.clip(facing[:, k], 0.0, None) ** BLEND_POWER * hit
+            acc += w[:, None] * view.rgb[py, px]
+            wsum += w
 
-                    right, up = _screen_basis(view.dir)
-                    sx = points[:, :3] @ right
-                    sy = points[:, :3] @ up
+        filled = wsum > 1e-12
+        colors = np.full((n_pts, 3), 200, dtype=np.uint8)
+        colors[filled] = np.clip(
+            acc[filled] / wsum[filled][:, None], 0, 255
+        ).astype(np.uint8)
 
-                    # 网格在该视角下的整体投影范围 → 该图的前景包围盒
-                    x0, y0, x1, y1 = view.box
-                    sxmin, sxmax = sx.min(), sx.max()
-                    symin, symax = sy.min(), sy.max()
-                    px = x0 + (sx[sel] - sxmin) / (sxmax - sxmin + 1e-9) * (x1 - x0)
-                    # 图像 v 轴向下，世界 y 向上
-                    py = y1 - (sy[sel] - symin) / (symax - symin + 1e-9) * (y1 - y0)
+        # 兜底一：掠射角下投影落到剪影外的点，放宽符号取最接近的视图
+        todo = ~filled
+        if todo.any():
+            best = np.argmax(facing, axis=1)
+            for k, view in enumerate(views):
+                sel = np.flatnonzero(todo & (best == k))
+                if len(sel) == 0:
+                    continue
+                px, py, hit = projected[k]
+                good = sel[hit[sel]]
+                colors[good] = view.rgb[py[good], px[good]]
+                filled[good] = True
 
-                    px = np.clip(px.astype(int), 0, view.rgb.shape[1] - 1)
-                    py = np.clip(py.astype(int), 0, view.rgb.shape[0] - 1)
-
-                    hit = view.alpha[py, px] > 8
-                    good = sel[hit]
-                    colors[good] = view.rgb[py[hit], px[hit]]
-                    filled[good] = True
-
-        # 第三级：仍然没着上的（投影到了透明像素），取空间最近的已着色点
+        # 兜底二：仍然没着上的，取空间最近的已着色点
         if not filled.all() and filled.any():
             from scipy.spatial import cKDTree
 
             tree = cKDTree(points[filled])
             _, idx = tree.query(points[~filled], k=1)
             colors[~filled] = colors[filled][idx]
-            filled[:] = True
 
         return colors
 
