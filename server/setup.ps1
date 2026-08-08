@@ -76,7 +76,30 @@ Write-Host "`n[3/4] 生成式 3D（TripoSR，源码已 vendor 在 server/tsr/）
 & $vpy -m pip install -i $PYPI omegaconf einops "transformers==4.46.3" trimesh rembg onnxruntime scikit-image imageio
 if ($LASTEXITCODE -ne 0) { Write-Host "TripoSR 依赖安装失败" -ForegroundColor Red; exit 1 }
 
-Write-Host "`n[4/4] Web 服务" -ForegroundColor Cyan
+Write-Host "`n[4/5] 多视图生成式（Hunyuan3D-2，仅形状管线）" -ForegroundColor Cyan
+# transformers 卡在 4.x：hy3dgen 要 >=4.48，但 5.x 重构了 ViT 的参数命名
+# （layers.0.attention.q_proj vs 旧的 encoder.layer.0.attention.attention.query），
+# TripoSR 的 checkpoint 会加载失败。4.48–4.x 两边都满足。
+& $vpy -m pip install -i $PYPI diffusers accelerate pymeshlab pygltflib "transformers>=4.48,<5"
+if ($LASTEXITCODE -ne 0) { Write-Host "Hunyuan3D 依赖安装失败" -ForegroundColor Red; exit 1 }
+
+# 源码放项目盘。--no-deps 跳过 gradio / xatlas / ninja 等只有纹理管线和 demo 才用的重依赖；
+# 纹理管线要编译 CUDA 扩展，Windows 上装不上，本项目也用不到（颜色由投影采样自己做）
+$hySrc = Join-Path $cache "src\Hunyuan3D-2"
+if (-not (Test-Path (Join-Path $hySrc "setup.py"))) {
+    Write-Host "拉取 Hunyuan3D-2 源码..." -ForegroundColor DarkGray
+    New-Item -ItemType Directory -Force -Path (Join-Path $cache "src") | Out-Null
+    git clone --depth 1 https://github.com/Tencent-Hunyuan/Hunyuan3D-2.git $hySrc
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "源码拉取失败（github.com 直连不通？挂代理再试）" -ForegroundColor Yellow
+    }
+}
+if (Test-Path (Join-Path $hySrc "setup.py")) {
+    & $vpy -m pip install --no-deps $hySrc
+    if ($LASTEXITCODE -ne 0) { Write-Host "hy3dgen 安装失败" -ForegroundColor Red; exit 1 }
+}
+
+Write-Host "`n[5/5] Web 服务" -ForegroundColor Cyan
 # httpx 是 FastAPI TestClient 的依赖，test_backend.py 要用
 & $vpy -m pip install -i $PYPI fastapi "uvicorn[standard]" python-multipart httpx
 if ($LASTEXITCODE -ne 0) { Write-Host "FastAPI 安装失败" -ForegroundColor Red; exit 1 }

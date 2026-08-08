@@ -4,7 +4,8 @@
 
 - **⚡ 浏览器快速模式** —— 模型在你自己的浏览器里跑（WebGPU），零服务器成本，纯静态可部署
 - **🎯 Python 高精度模式** —— 本机 GPU 跑 MoGe-2，输出带真实米制尺度的点云
-- **🧊 生成式 3D 模式** —— 本机 GPU 跑 TripoSR，**补全照片里看不见的背面**，转到任意角度都有形体
+- **🧊 生成式 3D · 单图** —— 本机 GPU 跑 TripoSR，一张图补全背面，快（约 3 秒）
+- **🎭 生成式 3D · 多视图** —— 本机 GPU 跑 Hunyuan3D-2mv，**给它三视图，背面照着你的图重建**
 
 技术方案与算法推导见 [PLAN.md](PLAN.md)。
 
@@ -113,22 +114,32 @@ cd server
 | `moge-2-vitb-normal` | 104M | ~400 MB | 更快 |
 | `moge-2-vits-normal` | 35M | ~140 MB | 最轻，网络差时先用这个试通 |
 
-### 三种模式的区别
+### 四种模式的区别
 
-| | ⚡ 浏览器 | 🎯 高精度 | 🧊 生成式 3D |
-|---|---|---|---|
-| 模型 | Depth Anything V2-Small (25M) | MoGe-2 ViT-L (326M) | TripoSR (~1.4GB) |
-| 产物 | 浮雕（一层皮） | 浮雕（一层皮，米制） | **完整 360° 形体** |
-| 转到背面 | 空的 | 空的 | **有内容（模型生成）** |
-| 几何来源 | 测量（推断可见表面） | 测量（米制尺度 + 自动内参） | **生成（推断完整形体）** |
-| 单图耗时 | 0.2–1s | 0.1–0.3s + 传输 | 5–20s |
-| 依赖 | 无 | Python + GPU | Python + GPU |
-| 适合 | 快速出特效 | 要真实尺度 / 干净边缘 | 要能转一圈看 |
+| | ⚡ 浏览器 | 🎯 高精度 | 🧊 生成式·单图 | 🎭 生成式·多视图 |
+|---|---|---|---|---|
+| 模型 | Depth Anything V2-S (25M) | MoGe-2 ViT-L (326M) | TripoSR (1.4GB) | Hunyuan3D-2mv (4.9GB) |
+| 输入 | 一张图 | 一张图 | 一张图 | **1–4 张视图** |
+| 产物 | 浮雕（一层皮） | 浮雕（一层皮，米制） | 完整 360° 形体 | **完整 360° 形体** |
+| 转到背面 | 空的 | 空的 | 有内容，但常糊 | **结构清晰** |
+| 背面来源 | — | — | 模型凭空推断 | **你给的背面图** |
+| 耗时 | 0.2–1s | 0.1–0.3s | 约 3s | 11–40s |
+| 显存 | — | 1.5GB | 1.5GB | 5.4GB |
+| 适合 | 快速出特效 | 要真实尺度 | 只有一张图时 | **人物 / 商品，要能转一圈** |
 
-**"测量"和"生成"的区别很重要**：前两种模式给出的几何来自照片里真实可见的像素；
-生成式模式的背面是模型依据训练时见过的海量物体**编出来的合理形状**，
-它看起来自洽，但不保证和实物的真实背面一致。要真实的背面，只能环着实物拍多张照片走摄影测量
-（Luma AI / Polycam / COLMAP 那条路），单张照片做不到。
+**"测量"和"生成"的区别很重要**：前两种模式的几何来自照片里真实可见的像素；
+后两种的背面是模型**生成**的。区别在于生成的依据：
+
+- **单图（TripoSR）** 只"看"过正面一次，背面是纯外推。正面很好，
+  但转到 135°–180° 通常糊成一团 —— 这是原理性上限，调参数救不回来。
+- **多视图（Hunyuan3D-2mv）** 把你给的每一张视图当条件输入，
+  给了背面图，背面就是照着它重建的。三视图下后脑勺、衣褶、鞋子都是清楚的。
+
+> **关于"三视图"的一个澄清**：三视图**不能**用来做摄影测量
+> （Luma AI / Polycam / COLMAP 那条路）—— 那类方法靠在多张照片里匹配同一个特征点做
+> 三角定位，要求相邻照片有 60–80% 画面重叠，三视图之间几乎零重叠，匹配不上任何东西。
+> 但多视图**生成**模型是另一套机制：视图是喂给扩散模型的条件，不是用来三角定位的。
+> 所以在这条路上，三视图恰恰是标准用法。
 
 切到高精度模式后，**「视场角 FOV」「深度强度」「边缘剔除」「远景剔除」四个滑杆会自动置灰** ——
 这些参数是给相对深度用的，MoGe 给的是真实几何，它们不参与计算。「保持原始尺度」导出的
@@ -178,7 +189,11 @@ RTX 3070 Laptop（8GB）实测：模型冷加载约 12 秒，之后每张图 5�
 | 模式 | 仓库 | 体积 |
 |---|---|---|
 | 🎯 高精度 | `Ruicheng/moge-2-vitl` | 1.2 GB |
-| 🧊 生成式 3D | `stabilityai/TripoSR` + `facebook/dino-vitb16`（只要 config） | 1.4 GB |
+| 🧊 生成式·单图 | `stabilityai/TripoSR` + `facebook/dino-vitb16`（只要 config） | 1.4 GB |
+| 🎭 生成式·多视图 | `tencent/Hunyuan3D-2mv`（只下 turbo 子目录） | 4.9 GB |
+
+> 只下 `hunyuan3d-dit-v2-mv-turbo` 一个子目录。整个仓库有 29.6GB（三个变体全算），
+> 别用 `snapshot_download` 不带 `allow_patterns` 去拉。
 
 **下载中断会留下坏缓存，而且症状具有误导性** —— HuggingFace 把没下完的文件留成
 `blobs/*.incomplete`，`snapshots/` 里则是空的。这时候界面不会报错，只会一直转圈，
@@ -206,11 +221,77 @@ server\.venv\Scripts\python.exe -c "from huggingface_hub import hf_hub_download;
 每个文件做一次联网 HEAD 校验，走 hf-mirror 时实测要多花 60 秒以上，
 而下面的显存互斥会让这个代价在每次切模式时重复付。
 
+---
+
+## 🎭 多视图模式（人物 / 商品首选）
+
+用 [Hunyuan3D-2mv](https://github.com/Tencent-Hunyuan/Hunyuan3D-2) 从**最多四张视图**重建完整形体。
+和其他后端模式共用同一个服务，在「引擎 → 推理模式」切到 **🎭 生成式 3D · 多视图**。
+
+切过去之后拖拽区会变成四个上传槽：
+
+| 槽位 | 必填 | 对应方位 |
+|---|---|---|
+| 正面 | **是** | 相机在 +Z |
+| 左侧 | 否 | 相机在 +X |
+| 背面 | 否 | 相机在 −Z |
+| 右侧 | 否 | 相机在 −X |
+
+只给正面也能跑（退化成模型自己编背面）；**每多给一张，那一侧就是照着你的原图重建的**。
+人物三视图（正面 / 左侧 / 背面）是最典型的用法，也是官方样例的组合。
+
+图可以点击选择，也可以直接拖到某个槽上；拖到页面空白处会自动填进第一个空槽。
+
+### 颜色是怎么来的
+
+Hunyuan3D 的形状管线**只出几何、不带顶点色**（带纹理的那条管线要编译 CUDA 扩展，
+Windows 上装不上）。所以颜色由 `hunyuan_runner.py` 自己做：
+按每个点的法线挑最正对的那张输入图，正交投影采样。
+
+对多视图输入来说这反而是优点 —— **颜色直接来自你给的原图，不是模型脑补的**。
+
+投影用的是「轮廓包围盒对齐」：把网格在该视角下的投影包围盒线性映射到该图的前景包围盒，
+不用去猜模型内部的归一化和留边参数，两边剪影直接对齐。
+
+三级兜底，因为给三张图时必然有一侧没人看得见（front/left/back 缺右侧，
+实测约 6% 的表面法线朝 −X）：① 只用正对的视图 ② 放宽符号取最接近的视图
+③ 仍未着色的取三维空间里最近的已着色点。实测最终未着色率 0.01%。
+
+### 视图方位是实测定的，不是推的
+
+`hy3dgen` 的 `MVImageProcessorV2` 只写了 `"front, front clockwise 90, back, front clockwise 270"`，
+但"顺时针"从哪个视角算存在歧义。所以 `VIEW_DIRS` 的轴向是**实测**确定的：
+把官方样例的 `left.png` 与网格在 +X / −X 两个相机位的渲染逐一比对，
++X 完全吻合（脸朝左、发髻在右），−X 是镜像。改这块前先重做这个比对。
+
+Hunyuan3D 的坐标系（Y 朝上、正面 +Z）与 three.js 一致，所以不需要换轴。
+
+### ⚠️ 许可提醒
+
+其他依赖都是 MIT / Apache / BSD，**只有 Hunyuan3D-2 是
+[腾讯混元非商业许可](https://github.com/Tencent-Hunyuan/Hunyuan3D-2/blob/main/LICENSE)**。
+它同时限制商业用途和部分地区的使用，权重和模型代码都受约束。
+本仓库不分发它的权重（运行时才下载），但如果你要把这个模式用于商业项目，
+请先读一遍那份许可。其他三种模式不受此限制。
+
+### 耗时与显存
+
+RTX 3070 Laptop（8GB）实测：权重进显存约 43 秒（4.9GB），之后每次生成 11–40 秒，
+显存峰值 5.38GB。体素分辨率默认 256，OOM 时自动降级（224 → 192 → 160）。
+
+想要更高质量可以换非蒸馏的标准变体（要 50 步，慢很多）：
+
+```powershell
+$env:HUNYUAN_SUBFOLDER = "hunyuan3d-dit-v2-mv"
+$env:HUNYUAN_STEPS = "50"
+.\start.ps1
+```
+
 ### 显存说明（8GB 卡请留意）
 
-MoGe 和 TripoSR 各要 1.5GB 上下，同时驻留会 OOM，所以后端做了**显存互斥**：
-切换模式时会自动把另一个模型踢出显存，切回来需要重新加载。
-实测切换一次 7–15 秒（权重已缓存的前提下，见上一节）。
+MoGe 1.5GB、TripoSR 1.5GB、Hunyuan3D-2mv 峰值 5.4GB，同时驻留必 OOM，
+所以后端做了**显存互斥**：切换模式时自动把其余模型踢出显存，切回来重新加载。
+实测切换一次 7–15 秒（Hunyuan 约 43 秒，权重大得多），前提是权重已缓存（见上一节）。
 
 marching cubes 的体素分辨率默认 192。**显存不足时会自动降级重试**
 （160 → 128 → 96），不会直接失败。想要更高细节且显存充裕：
@@ -240,11 +321,13 @@ npm run test:core              # 只跑核心算法（不需要模型和 Python�
 npm run test:protocol          # 只跑前后端契约（需要 Python，不需要 torch）
 npm run test:e2e               # 端到端：真实推理 → 点云 → 导出 PLY（需先 fetch-model）
 
-npm run test:gen3d             # 生成式 3D 全链路（需先启动 server/start.ps1）
+npm run test:gen3d             # 单图生成式全链路（需先启动 server/start.ps1）
+npm run test:mv                # 多视图全链路（同上）
 
 # 后端（在 server/ 下，用 .venv 里的 python）
-.venv\Scripts\python.exe test_backend.py    # 高精度模式：MoGe 推理 → HTTP → 二进制打包
-.venv\Scripts\python.exe test_gen3d.py      # 生成式 3D：TripoSR → 立体性检验 → HTTP
+.venv\Scripts\python.exe test_backend.py    # 高精度：MoGe 推理 → HTTP → 二进制打包
+.venv\Scripts\python.exe test_gen3d.py      # 单图生成式：TripoSR → 立体性检验 → HTTP
+.venv\Scripts\python.exe test_mv.py         # 多视图：Hunyuan3D → 着色检验 → HTTP
 ```
 
 `npm run test:gen3d` 和 `test_gen3d.py` 的分工值得说明：后者验证后端自己，
@@ -372,7 +455,8 @@ CloudCompare 打开后需要在左侧属性面板把 `Colors` 从 `None` 切到 
 | [transformers.js](https://github.com/huggingface/transformers.js) | 浏览器端推理运行时 | Apache 2.0 |
 | [three.js](https://github.com/mrdoob/three.js) | 3D 渲染 | MIT |
 | [MoGe](https://github.com/microsoft/MoGe) | 高精度后端 | MIT |
-| [TripoSR](https://github.com/VAST-AI-Research/TripoSR) | 生成式 3D 后端（源码 vendor 在 `server/tsr/`） | MIT |
+| [TripoSR](https://github.com/VAST-AI-Research/TripoSR) | 单图生成式后端（源码 vendor 在 `server/tsr/`） | MIT |
+| [Hunyuan3D-2](https://github.com/Tencent-Hunyuan/Hunyuan3D-2) | 多视图生成式后端 | 腾讯混元非商业许可 |
 | [rembg](https://github.com/danielgatis/rembg) | 生成前的自动抠图 | MIT |
 | [scikit-image](https://github.com/scikit-image/scikit-image) | marching cubes（替代需编译的 torchmcubes） | BSD-3 |
 | [Vite](https://github.com/vitejs/vite) | 构建工具 | MIT |

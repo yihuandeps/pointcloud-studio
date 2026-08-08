@@ -32,7 +32,15 @@
         </div>
         <h2>把图片拖进来</h2>
         <p>或者 <button type="button" class="linkbtn" id="pickBtn">选择文件</button>，也可以直接 Ctrl+V 粘贴</p>
-        <div class="dropzone__samples">
+
+        <!-- 多视图模式专用：正面必填，其余可选，给得越多背面越像原图 -->
+        <div class="mvslots" id="mvSlots" hidden>
+          <span class="mvslots__label">多视图：正面必填，其余可选（给得越多，背面越忠实于你的原图）</span>
+          <div class="mvslots__grid" id="mvSlotGrid"></div>
+          <button type="button" class="mvslots__go" id="mvGenerate" disabled>先放一张正面图</button>
+        </div>
+
+        <div class="dropzone__samples" id="dropSamples">
           <span class="dropzone__sampleslabel">没有素材？试试内置示例</span>
           <div class="samples" id="samples"></div>
         </div>
@@ -55,7 +63,8 @@
             <select class="select" id="modeSel">
               <option value="browser">⚡ 浏览器（WebGPU）</option>
               <option value="server">🎯 本机 Python（高精度）</option>
-              <option value="gen3d">🧊 生成式 3D（补全背面）</option>
+              <option value="gen3d">🧊 生成式 3D · 单图（TripoSR）</option>
+              <option value="mv">🎭 生成式 3D · 多视图（Hunyuan3D）</option>
             </select>
           </div>
           <div class="row" id="modelRow">

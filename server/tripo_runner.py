@@ -105,11 +105,10 @@ class TripoRunner:
             return True
 
     def _rembg(self):
-        if self.rembg_session is None:
-            import rembg
+        # 会话进程级共享，别和 Hunyuan 各放一份 u2net（每份约 168MB）
+        import bg_removal
 
-            self.rembg_session = rembg.new_session("u2net")
-        return self.rembg_session
+        return bg_removal.session()
 
     # ---------------- 信息 ----------------
 

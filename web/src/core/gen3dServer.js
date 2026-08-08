@@ -75,6 +75,59 @@ export function parseCloudResponse(buf) {
  * 生成完整 3D 点云。TripoSR 在 RTX 3070 上一张图约 10–20 秒
  * （抠背景 + 隐式场推理 + marching cubes + 采样），比深度估计慢一个量级。
  */
+/* ---------------- 多视图（Hunyuan3D-2mv）---------------- */
+
+const MV_API = {
+  health: '/api/mv/health',
+  warmup: '/api/mv/warmup',
+  generate: '/api/mv/generate',
+};
+
+export async function checkMvServer(timeoutMs = 2500) {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    const res = await fetch(MV_API.health, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!res.ok) return null;
+    return await res.json(); // { ok, kind, model, views, weightsCached, ... }
+  } catch {
+    return null;
+  }
+}
+
+export async function warmupMvServer() {
+  try {
+    const res = await fetch(MV_API.warmup, { method: 'POST' });
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 多视图生成。views 是 { front, left?, back?, right? } → File/Blob，front 必填。
+ * 响应格式与单图模式完全相同，所以复用 parseCloudResponse。
+ * RTX 3070 上三张图约 40 秒。
+ */
+export async function generateMvOnServer(views, { points } = {}) {
+  if (!views?.front) throw new Error('至少要提供正面图');
+
+  const form = new FormData();
+  for (const [name, file] of Object.entries(views)) {
+    if (file) form.append(name, file, `${name}.png`);
+  }
+  if (points) form.append('points', String(points));
+
+  const res = await fetch(MV_API.generate, { method: 'POST', body: form });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`后端返回 ${res.status}${detail ? `：${detail.slice(0, 200)}` : ''}`);
+  }
+
+  return parseCloudResponse(await res.arrayBuffer());
+}
+
 export async function generateOnServer(blob, { points } = {}) {
   const form = new FormData();
   form.append('image', blob, 'input.png');

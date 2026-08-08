@@ -12,7 +12,11 @@ import {
 import { prepareImage, canvasToBlob } from './core/imagePrep.js';
 import { BrowserDepthEngine } from './core/depthBrowser.js';
 import { checkServer, warmupServer, inferOnServer } from './core/depthServer.js';
-import { checkGenServer, warmupGenServer, generateOnServer } from './core/gen3dServer.js';
+import {
+  checkGenServer, warmupGenServer, generateOnServer,
+  checkMvServer, warmupMvServer, generateMvOnServer,
+} from './core/gen3dServer.js';
+import { createMvSlots } from './ui/mvSlots.js';
 import {
   buildPointCloud, buildPointCloudFromPointMap, buildPointCloudFromCloud,
 } from './core/unproject.js';
@@ -54,6 +58,11 @@ viewer.applyParams(params);
 const panel = buildPanel(document.getElementById('paramGroups'), PARAM_SCHEMA, params, onParamChange);
 
 const dz = createDropzone(handleImage);
+const mv = createMvSlots(handleMultiView);
+
+/** 生成式模式产出的是闭合形体，和浮雕的取舍不一样 —— 见 applyModeUI。 */
+const GENERATIVE = new Set(['gen3d', 'mv']);
+let solidTouchedByUser = false;
 
 /* --- 引擎下拉 --- */
 
@@ -106,14 +115,33 @@ modeSel.addEventListener('change', async () => {
 /** 切模式时把当前模式下失效的控件置灰，避免用户拖了没反应还以为是 bug。 */
 function applyModeUI() {
   const isBrowser = state.mode === 'browser';
+  const isGen = GENERATIVE.has(state.mode);
   modelRow.style.display = isBrowser ? '' : 'none';
   panel.setDisabled(
     BROWSER_ONLY_KEYS,
     !isBrowser,
-    state.mode === 'gen3d'
+    isGen
       ? '生成式 3D 直接输出完整三维形体，与深度图转换相关的参数不参与计算'
       : '高精度模式使用 MoGe 预测的真实内参与米制点图，此参数不参与计算',
   );
+
+  // 多视图模式换成槽位上传；其余模式用原来的拖拽入口
+  mv.show(state.mode === 'mv');
+  document.getElementById('dropSamples').hidden = state.mode === 'mv';
+
+  /*
+   * 生成式模式默认开「实体模式」。
+   * 前两种模式产出的是浮雕 —— 只有朝向相机的一层皮，不写深度缓冲、
+   * 让所有点混合渲染反而通透好看。但生成式产出的是**闭合的 360° 形体**，
+   * 不写深度就会永远同时看到前面和背面的点，转起来像一团半透明的雾，
+   * 正好把这个模式唯一的卖点（立体）给抹掉。
+   * 用户手动动过这个开关就不再自动覆盖。
+   */
+  if (!solidTouchedByUser && params.solidMode !== isGen) {
+    params.solidMode = isGen;
+    panel.set('solidMode', isGen);
+    viewer.applyParams(params);
+  }
 }
 
 modelSel.addEventListener('change', async () => {
@@ -160,6 +188,31 @@ const BACKEND_HINT = (name) =>
   '否则请用「⚡ 浏览器」模式，它完全在本页面里跑。';
 
 async function refreshEngineBadge() {
+  if (state.mode === 'mv') {
+    badge.set('loading', '正在探测本机后端…');
+    const info = await checkMvServer();
+    if (!info?.ok) {
+      badge.set('error', '需要本机后端');
+      dz.note(BACKEND_HINT('多视图生成'));
+      return;
+    }
+    if (info.weightsCached === false) {
+      badge.set('idle', '模型未下载（约 4.9GB）');
+      dz.note('多视图生成：Hunyuan3D 权重还没下载（约 4.9GB），首次使用需联网拉取，可能很慢');
+      return;
+    }
+    badge.set('ready', `Hunyuan3D-2mv · ${info.device ?? 'cuda'}`);
+    dz.note('多视图：正面必填，另外最多再给三张（左/背/右）。给得越多，背面越忠实于你的原图');
+    if (!info.loaded) {
+      badge.set('loading', '正在预热模型…');
+      warmupMvServer().then((r) => {
+        badge.set(r?.ok ? 'ready' : 'error',
+          r?.ok ? `Hunyuan3D-2mv · ${r.device ?? ''}`.trim() : '预热失败，首图会较慢');
+      });
+    }
+    return;
+  }
+
   if (state.mode === 'gen3d') {
     badge.set('loading', '正在探测本机后端…');
     const info = await checkGenServer();
@@ -252,6 +305,13 @@ async function boot() {
 
 async function handleImage(fileOrBlob, name = 'pointcloud') {
   if (state.busy) return;
+
+  // 多视图模式下，拖进来的图应该进槽位，而不是当场跑单图推理
+  if (state.mode === 'mv') {
+    mv.accept(fileOrBlob);
+    return;
+  }
+
   state.name = name.replace(/\.[^.]+$/, '') || 'pointcloud';
 
   try {
@@ -265,6 +325,50 @@ async function handleImage(fileOrBlob, name = 'pointcloud') {
     status.setSize(img.width, img.height);
 
     await runInference();
+  } catch (err) {
+    console.error(err);
+    status.error(String(err?.message ?? err));
+  } finally {
+    state.busy = false;
+  }
+}
+
+/**
+ * 多视图生成。和单图链路的区别只在这一步 ——
+ * 拿到点云之后，建云 / 渲染 / 导出全部复用同一套代码。
+ */
+async function handleMultiView(views) {
+  if (state.busy) return;
+  try {
+    state.busy = true;
+    const n = Object.keys(views).length;
+    status.show(`正在用 ${n} 张视图生成 3D 形体（约 40 秒）…`);
+
+    const t0 = performance.now();
+    const res = await generateMvOnServer(views, {
+      points: Math.max(600000, params.targetPoints),
+    });
+
+    state.name = 'multiview';
+    state.image = null;          // 多视图没有"那一张原图"，颜色随点云一起回来
+    state.preparedBlob = null;
+    state.source = { kind: 'cloud', ...res };
+    badge.set('ready', `Hunyuan3D-2mv · ${res.meta?.device ?? 'cuda'}`);
+
+    status.show('正在生成点云…');
+    rebuildCloud();
+
+    dz.hide();
+    status.showBar();
+    status.setTime(Math.round(performance.now() - t0));
+    status.done(
+      `完成 · ${state.cloud.count.toLocaleString('zh-CN')} 点 · `
+      + `用了 ${(res.meta?.viewsUsed ?? []).length || n} 张视图`,
+    );
+
+    viewer.replay();
+    for (const b of [btnExport, btnSnap, btnReplay, btnReset]) b.disabled = false;
+    updateExportLabel();
   } catch (err) {
     console.error(err);
     status.error(String(err?.message ?? err));
@@ -337,7 +441,9 @@ async function runInference() {
 
 /** 只重算点云，不重跑模型 —— 改 FOV / 点数 / 剔除阈值走这条路，很快。 */
 function rebuildCloud(replay = false) {
-  if (!state.source || !state.image) return;
+  // 散点云自带颜色，不需要原图；另外两种要拿 state.image 的像素上色
+  if (!state.source) return;
+  if (state.source.kind !== 'cloud' && !state.image) return;
 
   const t0 = performance.now();
   const cloud = state.source.kind === 'cloud'
@@ -384,6 +490,9 @@ function rebuildCloud(replay = false) {
 let rebuildTimer = 0;
 
 function onParamChange(key, value, needsRebuild) {
+  // 用户自己动过实体模式后，切模式就不再自动覆盖他的选择
+  if (key === 'solidMode') solidTouchedByUser = true;
+
   if (needsRebuild) {
     // 拖滑杆时别每一帧都重算，防抖
     clearTimeout(rebuildTimer);

@@ -18,6 +18,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
+from hunyuan_runner import HunyuanRunner
 from imaging import pack_cloud, pack_result
 from moge_runner import DEFAULT_MAX_SIDE, MoGeRunner
 from tripo_runner import DEFAULT_POINTS, TripoRunner
@@ -34,17 +35,21 @@ app.add_middleware(
 
 runner = MoGeRunner()
 gen_runner = TripoRunner()
+mv_runner = HunyuanRunner()
+
+_RUNNERS = {"depth": ("MoGe", runner), "gen": ("TripoSR", gen_runner),
+            "mv": ("Hunyuan3D-2mv", mv_runner)}
 
 
 def _switch_to(mode: str):
     """
-    显存互斥：MoGe ViT-L 和 TripoSR 各要 1.5GB 上下，8GB 的卡还要和桌面应用抢，
-    两个一起驻留必 OOM。切模式时把另一个踢出去。
-    切回来会重新加载（约 10–20 秒），比推理途中崩掉强。
+    显存互斥：MoGe 1.5GB、TripoSR 1.5GB、Hunyuan3D-2mv 峰值 5.4GB，
+    8GB 的卡还要和桌面应用抢，两个一起驻留必 OOM。切模式时把其余的踢出去。
+    切回来会重新加载（权重已缓存时 7–15 秒），比推理途中崩掉强。
     """
-    other = gen_runner if mode == "depth" else runner
-    if other.unload():
-        print(f"[显存] 已卸载 {'TripoSR' if mode == 'depth' else 'MoGe'} 腾出空间")
+    for key, (name, r) in _RUNNERS.items():
+        if key != mode and r.unload():
+            print(f"[显存] 已卸载 {name} 腾出空间")
 
 
 @app.get("/api/health")
@@ -157,6 +162,80 @@ def generate(image: UploadFile = File(...), points: str = Form(default="")):
                 "model": result["model"],
                 "device": result["device"],
                 "resolution": result["resolution"],
+                "ms": result["ms"],
+            },
+        )
+        return Response(content=body, media_type="application/octet-stream")
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"生成失败：{exc}") from exc
+
+
+@app.get("/api/mv/health")
+def mv_health():
+    return mv_runner.info()
+
+
+@app.post("/api/mv/warmup")
+def mv_warmup():
+    """提前把 Hunyuan3D-2mv 加载进显存（4.9GB 权重，冷加载约 15 秒）。"""
+    try:
+        _switch_to("mv")
+        mv_runner.load()
+        return mv_runner.info()
+    except Exception as exc:
+        mv_runner.load_error = str(exc)
+        raise HTTPException(status_code=500, detail=f"模型加载失败：{exc}") from exc
+
+
+@app.post("/api/mv/generate")
+async def mv_generate(
+    front: UploadFile = File(...),
+    left: UploadFile | None = File(default=None),
+    back: UploadFile | None = File(default=None),
+    right: UploadFile | None = File(default=None),
+    points: str = Form(default=""),
+):
+    """
+    多视图生成式 3D：1–4 张视图 → 完整 360° 点云。
+
+    正面必填，其余可选 —— 给得越多背面越忠实于你的原图，
+    只给正面时退化成"模型自己编背面"，效果接近但优于 TripoSR。
+    响应格式与 /api/generate 相同（imaging.pack_cloud）。
+    """
+    try:
+        images: dict[str, bytes] = {}
+        for name, up in (("front", front), ("left", left),
+                         ("back", back), ("right", right)):
+            if up is None:
+                continue
+            raw = await up.read()
+            if raw:
+                images[name] = raw
+
+        if "front" not in images:
+            raise HTTPException(status_code=400, detail="至少要上传正面图")
+
+        try:
+            n = int(points) if points.strip() else DEFAULT_POINTS
+        except ValueError:
+            n = DEFAULT_POINTS
+
+        _switch_to("mv")
+        result = mv_runner.generate(images, n_points=n)
+
+        body = pack_cloud(
+            result["positions"].tobytes(),
+            result["colors"].tobytes(),
+            {
+                "count": result["count"],
+                "model": result["model"],
+                "device": result["device"],
+                "resolution": result["resolution"],
+                "viewsUsed": result["viewsUsed"],
                 "ms": result["ms"],
             },
         )

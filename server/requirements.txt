@@ -32,9 +32,23 @@ huggingface_hub
 # tsr/models/isosurface.py 已改用 scikit-image 的 marching_cubes
 omegaconf
 einops
-transformers==4.46.3  # 4.35（上游锁定）的 tokenizers 会把 huggingface_hub 拽回 0.17，弄坏 MoGe
+# 上下界都是硬约束：4.35（TripoSR 上游锁定）的 tokenizers 会把 huggingface_hub
+# 拽回 0.17 弄坏 MoGe；5.x 重构了 ViT 参数命名，TripoSR 的 checkpoint 加载不上；
+# hy3dgen 又要求 >=4.48。只有 4.48–4.x 这段同时满足三方。
+transformers>=4.48,<5
 trimesh
 rembg                 # 抠背景；u2net.onnx 缓存位置由 U2NET_HOME 控制（start.ps1 指到项目盘）
 onnxruntime           # rembg 的推理运行时（CPU 版即可）
 scikit-image
 imageio               # tsr.utils 顶层 import，实际只有导视频用到
+
+# ---- 多视图生成式（Hunyuan3D-2，仅形状管线）----
+# hy3dgen 本体走 setup.ps1 从源码 --no-deps 安装：它的 install_requires 里
+# gradio / xatlas / ninja / pybind11 都只有纹理管线和 demo 才用得到。
+# 纹理管线要编译 CUDA 扩展，Windows 装不上，本项目也不需要 —— 颜色由
+# hunyuan_runner 的投影采样自己做（反而更忠实于用户给的原图）。
+diffusers
+accelerate
+pymeshlab             # shapegen.postprocessors 顶层 import
+pygltflib
+scipy                 # 着色的第三级兜底：最近邻填补

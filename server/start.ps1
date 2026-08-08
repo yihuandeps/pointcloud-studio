@@ -28,6 +28,12 @@ if (-not $env:U2NET_HOME) { $env:U2NET_HOME = Join-Path $root ".cache\u2net" }
 New-Item -ItemType Directory -Force -Path $env:U2NET_HOME | Out-Null
 if (-not $env:TRIPO_MODEL) { $env:TRIPO_MODEL = "stabilityai/TripoSR" }
 
+# Hunyuan3D 不认 HF_HOME，它自己有一套本地目录（默认 ~/.cache/hy3dgen，在系统盘）。
+# hunyuan_runner 会把已缓存的权重解析成绝对路径绕开它，这里再兜一层，
+# 保证万一走到它自己的探测分支也不会往系统盘写 4.9GB。
+if (-not $env:HY3DGEN_MODELS) { $env:HY3DGEN_MODELS = Join-Path $root ".cache\hy3dgen" }
+New-Item -ItemType Directory -Force -Path $env:HY3DGEN_MODELS | Out-Null
+
 # HF 缓存默认用符号链接，Windows 非管理员/未开开发者模式时会 WinError 1314
 if (-not $env:HF_HUB_DISABLE_SYMLINKS) { $env:HF_HUB_DISABLE_SYMLINKS = "1" }
 $env:HF_HUB_DISABLE_SYMLINKS_WARNING = "1"
