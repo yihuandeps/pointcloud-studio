@@ -160,10 +160,18 @@ try:
     blob = r.content
     head_len = struct.unpack("<I", blob[:4])[0]
     head = json.loads(blob[4:4 + head_len].decode("utf-8"))
-    expect = 4 + head_len + head["count"] * 3 * 4 + head["count"] * 3
+    n = head["count"]
+    expect = 4 + head_len + n * 3 * 4 + n * 3          # 头部 + XYZ + RGB
+    if head.get("hasNormals"):
+        expect += n * 3                                # int8 法线
+    if head.get("hasAO"):
+        expect += n                                    # uint8 凹陷度
 
     ok("响应体长度与头部声明相符", len(blob) == expect,
        f"实际 {len(blob)}，期望 {expect}")
+    ok("带回了法线与凹陷度（光照要用）",
+       head.get("hasNormals") and head.get("hasAO"),
+       f"hasNormals={head.get('hasNormals')} hasAO={head.get('hasAO')}")
     ok("头部字段齐全", all(k in head for k in ("count", "model", "device", "ms")),
        ", ".join(head.keys()))
     ok("点数遵从请求参数", head["count"] == 50000, str(head["count"]))
