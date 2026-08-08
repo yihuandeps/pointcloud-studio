@@ -280,9 +280,25 @@ class HunyuanRunner:
 
         # 1) 抠背景。模型按"居中的单个物体"训练，带背景效果明显变差
         cut: dict[str, Image.Image] = {}
+        warnings: list[str] = []
         for name, raw in images.items():
             img = Image.open(io.BytesIO(raw))
             cut[name] = bg_removal.cutout(img)
+
+            # 体检：这两种输入会让模型把整个画面当物体，生成出来是一块板
+            st = bg_removal.foreground_stats(cut[name])
+            if st["empty"]:
+                warnings.append(f"「{name}」抠图后没有剩下任何主体，这张多半没法用")
+            elif st["coverage"] > 0.92:
+                warnings.append(
+                    f"「{name}」主体占了画面 {st['coverage']*100:.0f}%，"
+                    "等于没抠掉背景 —— 生成结果会是一块板，建议换一张主体周围留白的图"
+                )
+            elif st["aspect"] > 2.2:
+                warnings.append(
+                    f"「{name}」前景宽高比 {st['aspect']:.1f}，太扁了 —— "
+                    "如果这是一张把三个视图拼在一起的图，请拆成三张分别上传"
+                )
 
         # 传给模型时按 front/left/back/right 的固定顺序，别依赖 dict 的插入序
         ordered = {k: cut[k] for k in VIEW_DIRS if k in cut}
@@ -337,6 +353,7 @@ class HunyuanRunner:
             "count": int(len(pts)),
             "resolution": used_octree,
             "viewsUsed": list(ordered),
+            "warnings": warnings,
             "ms": ms,
             "model": f"{self.model_id}/{self.subfolder}",
             "device": str(self.device),

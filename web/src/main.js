@@ -393,10 +393,19 @@ async function handleMultiView(views) {
     dz.hide();
     status.showBar();
     status.setTime(Math.round(performance.now() - t0));
-    status.done(
-      `完成 · ${state.cloud.count.toLocaleString('zh-CN')} 点 · `
-      + `用了 ${(res.meta?.viewsUsed ?? []).length || n} 张视图`,
-    );
+
+    // 后端对每张输入做了体检。生成出一块板的常见原因就藏在这里，
+    // 直接说出来，别让人对着方块猜
+    const warns = res.meta?.warnings ?? [];
+    if (warns.length) {
+      console.warn('[多视图] 输入有问题：\n' + warns.join('\n'));
+      status.error(warns[0] + (warns.length > 1 ? `（还有 ${warns.length - 1} 条，见控制台）` : ''));
+    } else {
+      status.done(
+        `完成 · ${state.cloud.count.toLocaleString('zh-CN')} 点 · `
+        + `用了 ${(res.meta?.viewsUsed ?? []).length || n} 张视图`,
+      );
+    }
 
     viewer.replay();
     for (const b of [btnExport, btnSnap, btnReplay, btnReset]) b.disabled = false;

@@ -24,15 +24,48 @@ def session():
     return _session
 
 
+#: 判定"这张图已经自己抠好了"所需的全透明像素占比。
+#: 曾经用的是"存在任意一个非全不透明像素"，太松了 —— 一条软边、一个半透明
+#: 水印就能让整张带背景的图被当成已抠好直接放行，模型于是把整个矩形画面
+#: 当成物体，生成出来是一块板。真正抠过的图，主体周围会有大片全透明区域。
+PRECUT_MIN_TRANSPARENT = 0.05
+
+
 def cutout(image):
     """
     PIL RGB/RGBA → 去背景后的 RGBA。
 
-    已经带透明通道（且真的有透明像素）的图直接放行 —— 用户自己抠好的边缘
-    通常比 u2net 更干净，没必要再抠一遍。
+    自己抠好的图直接放行（人工边缘通常比 u2net 干净），但判定要够严，
+    见 PRECUT_MIN_TRANSPARENT。
     """
+    import numpy as np
     import rembg
 
-    if image.mode == "RGBA" and image.getextrema()[3][0] < 255:
-        return image
+    if image.mode == "RGBA":
+        alpha = np.asarray(image.getchannel("A"))
+        if (alpha < 8).mean() >= PRECUT_MIN_TRANSPARENT:
+            return image
     return rembg.remove(image.convert("RGB"), session=session())
+
+
+def foreground_stats(image) -> dict:
+    """
+    抠完之后给这张图做个体检，用来提示"这张图多半生成不出好结果"。
+
+    两个已知会把结果搞成方块/板的输入：
+      - 主体几乎铺满整幅画面（说明什么都没抠掉），模型把整个矩形当物体
+      - 前景又扁又宽（多半是把三视图拼在一张图里，或者截图带了大片界面）
+    """
+    import numpy as np
+
+    a = np.asarray(image.convert("RGBA").getchannel("A"))
+    solid = a > 8
+    coverage = float(solid.mean())
+
+    ys, xs = np.nonzero(solid)
+    if len(xs) == 0:
+        return {"coverage": 0.0, "aspect": 0.0, "empty": True}
+
+    w = float(xs.max() - xs.min() + 1)
+    h = float(ys.max() - ys.min() + 1)
+    return {"coverage": coverage, "aspect": w / max(h, 1.0), "empty": False}

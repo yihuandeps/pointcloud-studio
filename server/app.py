@@ -236,6 +236,7 @@ async def mv_generate(
                 "device": result["device"],
                 "resolution": result["resolution"],
                 "viewsUsed": result["viewsUsed"],
+                "warnings": result["warnings"],
                 "ms": result["ms"],
             },
         )
