@@ -187,6 +187,28 @@ const BACKEND_HINT = (name) =>
   '这个网页版提供不了。想用的话按仓库 README 装好后运行 server/start.ps1；' +
   '否则请用「⚡ 浏览器」模式，它完全在本页面里跑。';
 
+/** 需要本机 Python 后端的三种模式。浏览器模式完全在页面里跑，不在此列。 */
+const BACKEND_MODES = ['server', 'gen3d', 'mv'];
+
+/**
+ * 探测后端，据此标注引擎下拉里的本机模式。
+ *
+ * 线上是纯静态托管，永远不会有后端 —— 那三个模式在那里**结构上就不可能可用**。
+ * 与其让人选中之后才撞上一句「需要本机后端」，不如在选项上先写清楚并禁用。
+ * 保留选项而不是删掉：让人知道这个工具还能做什么，只是得在本机跑。
+ */
+async function markBackendModes() {
+  const alive = !!(await checkServer(1500));
+  for (const m of BACKEND_MODES) {
+    const opt = modeSel.querySelector(`option[value="${m}"]`);
+    if (!opt) continue;
+    if (!opt.dataset.label) opt.dataset.label = opt.textContent;
+    opt.disabled = !alive;
+    opt.textContent = alive ? opt.dataset.label : `${opt.dataset.label} · 需本机运行`;
+  }
+  return alive;
+}
+
 async function refreshEngineBadge() {
   if (state.mode === 'mv') {
     badge.set('loading', '正在探测本机后端…');
@@ -290,16 +312,25 @@ async function probeWebGPU() {
 
 async function boot() {
   applyModeUI();
-  const [gpuNote, localMap] = await Promise.all([probeWebGPU(), labelModels()]);
+  const [gpuNote, localMap, backendAlive] = await Promise.all([
+    probeWebGPU(), labelModels(), markBackendModes(),
+  ]);
   state.localModels = localMap;
   dz.note([
     gpuNote,
     localMap[state.modelKey]
       ? '模型已本地就绪，无需联网'
       : `模型未预下载，首次使用需联网拉取约 ${MODELS[state.modelKey].sizeMB.fp16}MB（建议先跑 npm run fetch-model）`,
-  ].join(' · '));
+    backendAlive
+      ? null
+      : '另外三种模式需要在本机跑 Python + GPU 服务，线上版提供不了',
+  ].filter(Boolean).join(' · '));
   await refreshEngineBadge();
 }
+
+// 用户可能是打开页面之后才去启动后端的，展开下拉时重新探一次，省得非要刷新
+modeSel.addEventListener('mousedown', () => { markBackendModes(); });
+modeSel.addEventListener('focus', () => { markBackendModes(); });
 
 /* ---------------- 主流程 ---------------- */
 
