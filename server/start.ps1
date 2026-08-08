@@ -32,10 +32,9 @@ if (-not $env:TRIPO_MODEL) { $env:TRIPO_MODEL = "stabilityai/TripoSR" }
 if (-not $env:HF_HUB_DISABLE_SYMLINKS) { $env:HF_HUB_DISABLE_SYMLINKS = "1" }
 $env:HF_HUB_DISABLE_SYMLINKS_WARNING = "1"
 
-# 8GB 显存跑 marching cubes 容易被碎片拖垮，允许分配器扩展已有段
-if (-not $env:PYTORCH_CUDA_ALLOC_CONF) {
-    $env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
-}
+# 注：不要在这里设 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True。
+# Windows 的 CUDA 分配器不支持，torch 只会打一行 "not supported on this platform"
+# 警告然后忽略。8GB 显存的实际保障是 app.py 的模型互斥 + tripo_runner 的分辨率降级。
 
 Write-Host "HF 镜像 : $env:HF_ENDPOINT"
 Write-Host "模型    : $env:MOGE_MODEL（高精度） / $env:TRIPO_MODEL（生成式 3D）"

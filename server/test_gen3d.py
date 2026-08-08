@@ -21,6 +21,8 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ.setdefault("HF_HOME", str(ROOT / ".cache" / "huggingface"))
 os.environ.setdefault("U2NET_HOME", str(ROOT / ".cache" / "u2net"))
+# Windows 非管理员且没开开发者模式时，HF 缓存建符号链接会 WinError 1314
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
 
 PASS = 0
 FAIL = 0

@@ -149,23 +149,40 @@ plyFormat.addEventListener('change', updateExportLabel);
 
 /* ---------------- 引擎状态 ---------------- */
 
+/**
+ * 后端缺失时的提示。
+ * 线上那份是纯静态托管，永远不会有后端 —— 访客手上没有仓库，
+ * 跟他说「去跑 server/start.ps1」等于没说，所以要讲清楚这是本机功能。
+ */
+const BACKEND_HINT = (name) =>
+  `${name}需要在你自己的电脑上跑一个本机服务（Python + GPU），` +
+  '这个网页版提供不了。想用的话按仓库 README 装好后运行 server/start.ps1；' +
+  '否则请用「⚡ 浏览器」模式，它完全在本页面里跑。';
+
 async function refreshEngineBadge() {
   if (state.mode === 'gen3d') {
     badge.set('loading', '正在探测本机后端…');
     const info = await checkGenServer();
     if (info?.ok) {
       badge.set('ready', `TripoSR · ${info.device ?? 'cuda'}`);
-      dz.note('生成式 3D 就绪 · 单图生成完整 360° 形体，背面由模型补全（约 10–20 秒）');
-      if (!info.loaded) {
-        badge.set('loading', '正在预热模型…');
-        warmupGenServer().then((r) => {
-          badge.set(r?.ok ? 'ready' : 'error',
-            r?.ok ? `TripoSR · ${r.device ?? ''}`.trim() : '预热失败，首图会较慢');
-        });
+      if (info.weightsCached === false) {
+        // 权重没下过时预热会卡在下载上（1.4GB，镜像不通还会长时间重试），
+        // 先说清楚，别让用户对着转圈的界面猜
+        badge.set('idle', '模型未下载（约 1.4GB）');
+        dz.note('生成式 3D：模型权重还没下载（约 1.4GB），首次使用需联网拉取，可能很慢');
+      } else {
+        dz.note('生成式 3D 就绪 · 单图生成完整 360° 形体，背面由模型补全（约 10–20 秒）');
+        if (!info.loaded) {
+          badge.set('loading', '正在预热模型…');
+          warmupGenServer().then((r) => {
+            badge.set(r?.ok ? 'ready' : 'error',
+              r?.ok ? `TripoSR · ${r.device ?? ''}`.trim() : '预热失败，首图会较慢');
+          });
+        }
       }
     } else {
-      badge.set('error', '后端未启动（server/start.ps1）');
-      dz.note('生成式 3D 需要先启动 server/start.ps1；也可以切回浏览器模式');
+      badge.set('error', '需要本机后端');
+      dz.note(BACKEND_HINT('生成式 3D'));
     }
     return;
   }
@@ -173,6 +190,11 @@ async function refreshEngineBadge() {
   if (state.mode === 'server') {
     badge.set('loading', '正在探测本机后端…');
     const info = await checkServer();
+    if (info?.ok && info.weightsCached === false) {
+      badge.set('idle', '模型未下载（约 1.2GB）');
+      dz.note('高精度模式：MoGe 权重还没下载（约 1.2GB），首次使用需联网拉取，可能很慢');
+      return;
+    }
     if (info?.ok) {
       badge.set('ready', `${info.model ?? 'MoGe'} · ${info.device ?? 'cuda'}`);
       dz.note(`高精度模式就绪 · ${info.gpu ?? info.device ?? ''}`.trim());
@@ -185,8 +207,8 @@ async function refreshEngineBadge() {
         });
       }
     } else {
-      badge.set('error', '后端未启动（server/start.ps1）');
-      dz.note('高精度模式需要先启动 server/start.ps1；也可以切回浏览器模式');
+      badge.set('error', '需要本机后端');
+      dz.note(BACKEND_HINT('高精度模式'));
     }
     return;
   }

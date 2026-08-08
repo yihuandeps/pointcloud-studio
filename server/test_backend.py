@@ -21,6 +21,8 @@ sys.path.insert(0, str(ROOT))
 # 权重走镜像，缓存放项目盘（系统盘通常不宽裕）
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ.setdefault("HF_HOME", str(ROOT / ".cache" / "huggingface"))
+# Windows 非管理员且没开开发者模式时，HF 缓存建符号链接会 WinError 1314
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
 
 PASS = 0
 FAIL = 0
@@ -38,8 +40,11 @@ def ok(name: str, cond: bool, extra: str = ""):
 
 def synth_image(w: int = 512, h: int = 384) -> bytes:
     """
-    合成一张有明确深度层次的图：渐变背景 + 中央一个带朗伯着色的球。
-    球应该被模型判为更近（OpenCV 坐标系下 Z 更小）。
+    合成一张渐变背景 + 中央带朗伯着色的球。
+
+    注意合成图的固有局限：MoGe 自带有效性 mask，会把这种人造背景整片判为
+    无效（实测有效像素恰好≈球的面积，背景只剩一百多个点），加纹理也救不回来 ——
+    它就不认这是真实场景。所以下面的几何断言只在球内部做，不去比较球和背景。
     """
     import numpy as np
     from PIL import Image
@@ -119,7 +124,9 @@ ok("点图无 NaN/Inf", bool(np.isfinite(pts).all()))
 
 valid = msk.astype(bool)
 cover = valid.mean()
-ok("有效像素占比合理", 0.3 < cover < 1.001, f"{cover * 100:.1f}%")
+# 合成图上 mask 只会保住球本身（约占画面 20%），背景整片被判无效 —— 见 synth_image 的说明。
+# 这里只确认 mask 不是全 0 也不是全 1（那两种才说明模型或解包出了问题）。
+ok("mask 有区分度（不是全有效/全无效）", 0.05 < cover < 0.999, f"{cover * 100:.1f}%")
 
 intr = result["intrinsics"]
 ok("返回 3×3 相机内参", intr is not None and len(intr) == 3 and len(intr[0]) == 3,
@@ -128,18 +135,26 @@ if intr:
     ok("焦距为正", intr[0][0] > 0 and intr[1][1] > 0,
        f"fx={intr[0][0]:.4f} fy={intr[1][1]:.4f}")
 
-# OpenCV 坐标系：Z 沿视线向前，越近 Z 越小
+# OpenCV 坐标系：Z 沿视线向前，越近 Z 越小。
+# 背景在合成图上拿不到有效点，所以几何检验全部放在球内部做 ——
+# 球心比球缘离相机更近，这是凸面体的硬性质，模型答对了才说明它真的重建了曲面。
 z = pts[:, :, 2]
 sphere = valid & inside_mask
-bg = valid & ~inside_mask
-if sphere.sum() > 500 and bg.sum() > 500:
-    zs, zb = float(z[sphere].mean()), float(z[bg].mean())
-    ok("模型判定球比背景更近（Z 更小）", zs < zb,
-       f"球 Z={zs:.3f}m，背景 Z={zb:.3f}m")
+ok("球体区域样本充足", sphere.sum() > 5000, f"{sphere.sum()} 点")
+
+if sphere.sum() > 5000:
+    yy, xx = np.mgrid[0:H, 0:W]
+    rad = np.sqrt(((xx - W * 0.5) / (W * 0.22)) ** 2
+                  + ((yy - H * 0.55) / (W * 0.22)) ** 2)
+    core = sphere & (rad < 0.35)      # 球心附近
+    rim = sphere & (rad > 0.80)       # 球缘一圈
+    zc, zr = float(z[core].mean()), float(z[rim].mean())
+    ok("球心比球缘更近（Z 更小）—— 模型确实重建出了曲面", zc < zr,
+       f"球心 Z={zc:.3f}m，球缘 Z={zr:.3f}m，凸起 {(zr - zc) * 100:.1f}cm")
+
+    zs = float(z[sphere].mean())
     ok("输出是米制量级（不是 0–1 归一化值）", 0.05 < zs < 500,
-       f"球心距离 {zs:.3f} m")
-else:
-    ok("球/背景区域样本足够", False, f"球 {sphere.sum()} 背景 {bg.sum()}")
+       f"球面平均距离 {zs:.3f} m")
 
 print(f"     推理耗时 {result['ms']} ms")
 

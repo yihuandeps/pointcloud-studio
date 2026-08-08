@@ -18,13 +18,20 @@ class DINOSingleImageTokenizer(BaseModule):
     cfg: Config
 
     def configure(self) -> None:
-        self.model: ViTModel = ViTModel(
-            ViTModel.config_class.from_pretrained(
-                hf_hub_download(
-                    repo_id=self.cfg.pretrained_model_name_or_path,
-                    filename="config.json",
-                )
+        # 上游直接 hf_hub_download，每次构建都会联网做一次 HEAD 校验。
+        # 权重本来就来自 TripoSR 自己的 checkpoint，这里只要一份网络结构描述，
+        # 缓存里有就别再联网 —— 走 hf-mirror 时这一次校验就要十几秒，
+        # 而切换模式会反复重建模型。缓存没有时按原样联网下载。
+        repo = self.cfg.pretrained_model_name_or_path
+        try:
+            config_path = hf_hub_download(
+                repo_id=repo, filename="config.json", local_files_only=True
             )
+        except Exception:
+            config_path = hf_hub_download(repo_id=repo, filename="config.json")
+
+        self.model: ViTModel = ViTModel(
+            ViTModel.config_class.from_pretrained(config_path)
         )
 
         if self.cfg.enable_gradient_checkpointing:

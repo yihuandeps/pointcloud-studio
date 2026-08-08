@@ -171,10 +171,46 @@ TripoSR 是按**居中的单个物体**训练的，后端会先用 rembg 自动�
 
 RTX 3070 Laptop（8GB）实测：模型冷加载约 12 秒，之后每张图 5–20 秒。
 
+### 模型权重与冷启动
+
+两种后端模式各有一份权重，都缓存在 `server/.cache/huggingface`（不入库，也不会碰系统盘）：
+
+| 模式 | 仓库 | 体积 |
+|---|---|---|
+| 🎯 高精度 | `Ruicheng/moge-2-vitl` | 1.2 GB |
+| 🧊 生成式 3D | `stabilityai/TripoSR` + `facebook/dino-vitb16`（只要 config） | 1.4 GB |
+
+**下载中断会留下坏缓存，而且症状具有误导性** —— HuggingFace 把没下完的文件留成
+`blobs/*.incomplete`，`snapshots/` 里则是空的。这时候界面不会报错，只会一直转圈，
+实际上是在反复重试一个下不动的链接。确认权重是否完整：
+
+```powershell
+# snapshots 目录里应该有真实文件；只有 .incomplete 说明没下完
+Get-ChildItem server\.cache\huggingface\hub\models--*\snapshots -Recurse -File
+```
+
+没下完就把对应的 `models--*` 整个目录删掉重下。国内网络下 `hf-mirror.com` 时好时坏，
+挂代理直连 `huggingface.co` 往往更稳：
+
+```powershell
+$env:HTTPS_PROXY = "http://127.0.0.1:7897"   # 换成你自己的代理端口
+$env:HF_HOME = "$PWD\server\.cache\huggingface"
+$env:HF_HUB_DISABLE_SYMLINKS = "1"           # 否则 Windows 非管理员会 WinError 1314
+server\.venv\Scripts\python.exe -c "from huggingface_hub import hf_hub_download; hf_hub_download('Ruicheng/moge-2-vitl','model.pt')"
+```
+
+前端的引擎状态灯会区分「模型未下载」和「后端未启动」，不会让你对着转圈猜。
+
+**冷启动耗时**：权重已缓存时，MoGe 约 9 秒、TripoSR 约 12 秒进显存。
+两个 runner 都刻意先用 `local_files_only=True` 走本地缓存 —— 否则每次加载都要对
+每个文件做一次联网 HEAD 校验，走 hf-mirror 时实测要多花 60 秒以上，
+而下面的显存互斥会让这个代价在每次切模式时重复付。
+
 ### 显存说明（8GB 卡请留意）
 
 MoGe 和 TripoSR 各要 1.5GB 上下，同时驻留会 OOM，所以后端做了**显存互斥**：
-切换模式时会自动把另一个模型踢出显存，切回来需要重新加载（约 10–20 秒）。
+切换模式时会自动把另一个模型踢出显存，切回来需要重新加载。
+实测切换一次 7–15 秒（权重已缓存的前提下，见上一节）。
 
 marching cubes 的体素分辨率默认 192。**显存不足时会自动降级重试**
 （160 → 128 → 96），不会直接失败。想要更高细节且显存充裕：
@@ -204,10 +240,18 @@ npm run test:core              # 只跑核心算法（不需要模型和 Python�
 npm run test:protocol          # 只跑前后端契约（需要 Python，不需要 torch）
 npm run test:e2e               # 端到端：真实推理 → 点云 → 导出 PLY（需先 fetch-model）
 
+npm run test:gen3d             # 生成式 3D 全链路（需先启动 server/start.ps1）
+
 # 后端（在 server/ 下，用 .venv 里的 python）
 .venv\Scripts\python.exe test_backend.py    # 高精度模式：MoGe 推理 → HTTP → 二进制打包
 .venv\Scripts\python.exe test_gen3d.py      # 生成式 3D：TripoSR → 立体性检验 → HTTP
 ```
+
+`npm run test:gen3d` 和 `test_gen3d.py` 的分工值得说明：后者验证后端自己，
+前者验证**浏览器真正走的那条路** —— 同一份 `gen3dServer.js` 解析二进制、
+同一份 `unproject.js` 抽稀归一化、同一份 `plyExport.js` 写文件。
+后端全绿但前端解析错位这类问题，只有前者能测出来。产物 `tests/out/e2e_gen3d.ply`
+可以直接拖进 CloudCompare 转一圈验背面。
 
 **两个后端测试要分开跑** —— 各自都要把模型加载进显存，8GB 的卡同时跑会 OOM。
 
@@ -306,6 +350,10 @@ npm run build
 **生成式模式出来的东西不像原图 / 形状很怪**
 TripoSR 按"居中的单个物体"训练。风景、街景、多个物体、大场景都不适用 ——
 它不知道该把哪个当主体。换一张主体明确、背景干净的图片试试。
+
+**切到后端模式后一直转圈，既不报错也不出结果**
+多半是权重没下完。看「模型权重与冷启动」一节确认 `snapshots/` 里有没有真实文件；
+只有 `.incomplete` 就是没下完，删掉重下。
 
 **生成时报显存不足**
 先关掉浏览器等占显存的程序（桌面应用通常已占 1–2GB）。后端已经做了自动降级

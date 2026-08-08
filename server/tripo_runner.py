@@ -52,6 +52,28 @@ class TripoRunner:
 
     # ---------------- 加载 ----------------
 
+    def _resolve_weights(self) -> str:
+        """
+        把权重解析成本地目录，已缓存时**完全不联网**。
+
+        默认的 from_pretrained 每次都会对 config.yaml / model.ckpt 各做一次
+        HEAD 校验，走 hf-mirror 时实测要 60 秒以上。而 app.py 的显存互斥
+        会在每次切模式时重新加载，这个代价会反复付。
+        解析到 snapshot 目录后交给 TSR.from_pretrained 的 isdir 分支，零网络请求。
+        """
+        from huggingface_hub import hf_hub_download
+
+        names = ("config.yaml", "model.ckpt")
+        try:
+            paths = [
+                hf_hub_download(repo_id=self.model_id, filename=n, local_files_only=True)
+                for n in names
+            ]
+        except Exception:
+            # 没下过（或换了模型变体）就正常联网下载
+            paths = [hf_hub_download(repo_id=self.model_id, filename=n) for n in names]
+        return os.path.dirname(paths[0])  # 同一个 snapshot，两个文件都在这
+
     def load(self):
         if self.model is not None:
             return self.model
@@ -62,7 +84,9 @@ class TripoRunner:
 
             t0 = time.time()
             model = TSR.from_pretrained(
-                self.model_id, config_name="config.yaml", weight_name="model.ckpt"
+                self._resolve_weights(),
+                config_name="config.yaml",
+                weight_name="model.ckpt",
             )
             model.renderer.set_chunk_size(self.chunk_size)
             model.to(self.device)
@@ -89,6 +113,18 @@ class TripoRunner:
 
     # ---------------- 信息 ----------------
 
+    def weights_cached(self) -> bool:
+        """权重是否已在本地（约 1.4GB）。只查缓存，不发网络请求。见 MoGeRunner 同名方法。"""
+        from huggingface_hub import hf_hub_download
+
+        try:
+            hf_hub_download(
+                repo_id=self.model_id, filename="model.ckpt", local_files_only=True
+            )
+            return True
+        except Exception:
+            return False
+
     def info(self) -> dict:
         d = {
             "ok": self.load_error is None,
@@ -96,6 +132,7 @@ class TripoRunner:
             "model": self.model_id,
             "device": str(self.device),
             "loaded": self.model is not None,
+            "weightsCached": self.model is not None or self.weights_cached(),
             "torch": torch.__version__,
         }
         if self.load_error:

@@ -12,7 +12,8 @@
     "test": "node tests/core.test.mjs && node tests/protocol.test.mjs",
     "test:core": "node tests/core.test.mjs",
     "test:protocol": "node tests/protocol.test.mjs",
-    "test:e2e": "node tests/e2e.model.mjs"
+    "test:e2e": "node tests/e2e.model.mjs",
+    "test:gen3d": "node tests/e2e.gen3d.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

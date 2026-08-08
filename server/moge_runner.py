@@ -52,7 +52,13 @@ class MoGeRunner:
             from moge.model.v2 import MoGeModel
 
             t0 = time.time()
-            model = MoGeModel.from_pretrained(self.model_id)
+            # 已缓存就别联网校验。from_pretrained 把多余的 kwargs 透传给
+            # hf_hub_download，走 hf-mirror 时这一次 HEAD 要几十秒，
+            # 而 app.py 的显存互斥会在每次切模式时重新加载，代价要反复付。
+            try:
+                model = MoGeModel.from_pretrained(self.model_id, local_files_only=True)
+            except Exception:
+                model = MoGeModel.from_pretrained(self.model_id)
             model = model.to(self.device).eval()
             self.model = model
             self.load_seconds = round(time.time() - t0, 2)
@@ -73,12 +79,29 @@ class MoGeRunner:
 
     # ---------------- 信息 ----------------
 
+    def weights_cached(self) -> bool:
+        """
+        权重是否已在本地。没有的话首次使用要下 1.2GB，而 hf-mirror 不通时
+        请求会挂在重试里十几分钟且毫无反馈 —— 前端据此提前给出提示。
+        只查本地缓存，不发网络请求。
+        """
+        from huggingface_hub import hf_hub_download
+
+        try:
+            hf_hub_download(
+                repo_id=self.model_id, filename="model.pt", local_files_only=True
+            )
+            return True
+        except Exception:
+            return False
+
     def info(self) -> dict:
         d = {
             "ok": self.load_error is None,
             "model": self.model_id,
             "device": str(self.device),
             "loaded": self.model is not None,
+            "weightsCached": self.model is not None or self.weights_cached(),
             "fp16": self.fp16,
             "torch": torch.__version__,
         }
