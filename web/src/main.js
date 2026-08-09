@@ -240,19 +240,25 @@ async function refreshEngineBadge() {
     badge.set('loading', '正在探测本机后端…');
     const info = await checkGenServer();
     if (info?.ok) {
-      badge.set('ready', `TripoSR · ${info.device ?? 'cuda'}`);
+      // 单图模式默认跑 Hunyuan（只喂正面），比 TripoSR 干净一个代际；
+      // 后端可用 SINGLE_ENGINE=triposr 换回省显存的老引擎
+      const name = info.engine === 'triposr' ? 'TripoSR' : 'Hunyuan3D';
+      const sizeMB = info.engine === 'triposr' ? '1.4GB' : '4.9GB';
+      badge.set('ready', `${name} · ${info.device ?? 'cuda'}`);
       if (info.weightsCached === false) {
-        // 权重没下过时预热会卡在下载上（1.4GB，镜像不通还会长时间重试），
-        // 先说清楚，别让用户对着转圈的界面猜
-        badge.set('idle', '模型未下载（约 1.4GB）');
-        dz.note('生成式 3D：模型权重还没下载（约 1.4GB），首次使用需联网拉取，可能很慢');
+        // 权重没下过时预热会卡在下载上，先说清楚，别让人对着转圈的界面猜
+        badge.set('idle', `模型未下载（约 ${sizeMB}）`);
+        dz.note(`生成式 3D：${name} 权重还没下载（约 ${sizeMB}），首次使用需联网拉取，可能很慢`);
       } else {
-        dz.note('生成式 3D 就绪 · 单图生成完整 360° 形体，背面由模型补全（约 10–20 秒）');
+        dz.note(
+          `生成式 3D 就绪 · ${name} · 一张图生成完整 360° 形体，背面由模型补全（约 12 秒）。`
+          + '想让背面更贴合原作，改用「🎭 多视图」把背面图也给它。',
+        );
         if (!info.loaded) {
           badge.set('loading', '正在预热模型…');
           warmupGenServer().then((r) => {
             badge.set(r?.ok ? 'ready' : 'error',
-              r?.ok ? `TripoSR · ${r.device ?? ''}`.trim() : '预热失败，首图会较慢');
+              r?.ok ? `${name} · ${r.device ?? ''}`.trim() : '预热失败，首图会较慢');
           });
         }
       }
@@ -473,7 +479,15 @@ async function runInference() {
   dz.hide();
   status.showBar();
   status.setTime(Math.round(performance.now() - t0));
-  status.done(`完成 · ${state.cloud.count.toLocaleString('zh-CN')} 点`);
+
+  // 单图生成式也会回报输入体检结果（主体铺满画面之类），照样说出来
+  const warns = state.source?.meta?.warnings ?? [];
+  if (warns.length) {
+    console.warn('[生成式] 输入有问题：\n' + warns.join('\n'));
+    status.error(warns[0]);
+  } else {
+    status.done(`完成 · ${state.cloud.count.toLocaleString('zh-CN')} 点`);
+  }
 
   viewer.replay();
   for (const b of [btnExport, btnSnap, btnReplay, btnReset]) b.disabled = false;

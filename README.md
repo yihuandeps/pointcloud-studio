@@ -4,7 +4,7 @@
 
 - **⚡ 浏览器快速模式** —— 模型在你自己的浏览器里跑（WebGPU），零服务器成本，纯静态可部署
 - **🎯 Python 高精度模式** —— 本机 GPU 跑 MoGe-2，输出带真实米制尺度的点云
-- **🧊 生成式 3D · 单图** —— 本机 GPU 跑 TripoSR，一张图补全背面，快（约 3 秒）
+- **🧊 生成式 3D · 单图** —— 本机 GPU 跑 Hunyuan3D（只喂正面），一张图补全背面
 - **🎭 生成式 3D · 多视图** —— 本机 GPU 跑 Hunyuan3D-2mv，**给它三视图，背面照着你的图重建**
 
 技术方案与算法推导见 [PLAN.md](PLAN.md)。
@@ -155,7 +155,7 @@ cd server
 
 | | ⚡ 浏览器 | 🎯 高精度 | 🧊 生成式·单图 | 🎭 生成式·多视图 |
 |---|---|---|---|---|
-| 模型 | Depth Anything V2-S (25M) | MoGe-2 ViT-L (326M) | TripoSR (1.4GB) | Hunyuan3D-2mv (4.9GB) |
+| 模型 | Depth Anything V2-S (25M) | MoGe-2 ViT-L (326M) | Hunyuan3D-2mv（只给正面） | Hunyuan3D-2mv（1–4 视图） |
 | 输入 | 一张图 | 一张图 | 一张图 | **1–4 张视图** |
 | 产物 | 浮雕（一层皮） | 浮雕（一层皮，米制） | 完整 360° 形体 | **完整 360° 形体** |
 | 转到背面 | 空的 | 空的 | 有内容，但常糊 | **结构清晰** |
@@ -167,8 +167,13 @@ cd server
 **"测量"和"生成"的区别很重要**：前两种模式的几何来自照片里真实可见的像素；
 后两种的背面是模型**生成**的。区别在于生成的依据：
 
-- **单图（TripoSR）** 只"看"过正面一次，背面是纯外推。正面很好，
-  但转到 135°–180° 通常糊成一团 —— 这是原理性上限，调参数救不回来。
+- **单图** 只有正面信息，背面是模型自己编的。用的也是 Hunyuan3D-2mv ——
+  它本来就接受 1–4 张视图，只给一张时退化成纯推断。
+
+  > 单图模式原先用 TripoSR（2024 年初），后来换掉了：同一张图并排渲染，
+  > TripoSR 的五官是涂抹的、发丝一片噪点，Hunyuan 干净得多，差距是代际的。
+  > 代价是慢一些（约 12s vs 3–6s）、显存多用一些（5.4GB vs 1.5GB）。
+  > 显存吃紧或要快时可以换回去：`$env:SINGLE_ENGINE="triposr"`。
 - **多视图（Hunyuan3D-2mv）** 把你给的每一张视图当条件输入，
   给了背面图，背面就是照着它重建的。三视图下后脑勺、衣褶、鞋子都是清楚的。
 
@@ -226,7 +231,7 @@ RTX 3070 Laptop（8GB）实测：模型冷加载约 12 秒，之后每张图 5�
 | 模式 | 仓库 | 体积 |
 |---|---|---|
 | 🎯 高精度 | `Ruicheng/moge-2-vitl` | 1.2 GB |
-| 🧊 生成式·单图 | `stabilityai/TripoSR` + `facebook/dino-vitb16`（只要 config） | 1.4 GB |
+| 🧊 生成式·单图 | 同下（复用 Hunyuan3D-2mv）；换回 TripoSR 才需要 `stabilityai/TripoSR` | 0（或 1.4 GB） |
 | 🎭 生成式·多视图 | `tencent/Hunyuan3D-2mv`（只下 turbo 子目录） | 4.9 GB |
 
 > 只下 `hunyuan3d-dit-v2-mv-turbo` 一个子目录。整个仓库有 29.6GB（三个变体全算），
@@ -311,6 +316,33 @@ server\.venv\Scripts\python.exe -c "from huggingface_hub import hf_hub_download;
 
 背景本身不用你手动抠 —— rembg 会自动处理，实测连杂乱彩色背景都能抠干净
 （同一组图在「带 alpha / 白底 / 杂乱背景」三种输入下生成的形体跨度差异 < 0.03）。
+
+### 关于「先生成缺失视角再重建」（试过，8GB 卡上行不通）
+
+单图模式的天花板很清楚：背面没有任何信息。SOTA 的解法是先用多视图扩散模型
+把缺的视角**生成**出来，再走多视图重建。这条路实现在 `server/mvgen_runner.py`
+（MV-Adapter i2mv），代码是通的，但**默认不接进流程** —— 它在 8GB 显存上跑不动。
+
+实测数据，供有大显存卡的人参考：
+
+- 官方 README 说 image-to-multiview 要 **约 14GB**。那句「SD2.1 版 <6G」
+  指的是**几何条件版**（tg2mv / ig2mv），不是 i2mv，别看串了（我看串过）。
+- 即便砍到 4 视角、384 分辨率，实测 PyTorch 仍申请到 **21GB**；
+  在 Windows 上会溢出到系统内存，表现为「GPU 满载但慢到不可用」。
+
+调试中确认的三件事，都写在 `mvgen_runner.py` 的注释里：
+
+- **别开 `enable_attention_slicing()`** —— 它把注意力切回会完整展开矩阵的老路径。
+  多视图注意力的序列长度是单视角的 N 倍，实测直接要 39GB。默认的 SDPA 从不展开。
+- **别开 CPU 卸载** —— 这条管线的参考条件是「先跑参考图、按模块名缓存各层
+  hidden states，再在多视图那遍查表」。accelerate 的 hook 会改变模块路径，
+  查表时报 `KeyError: down_blocks.0.attentions.0...processor`。
+- 适配器是 `from_pretrained` 之后才加载的，权重还是 fp32，
+  要显式 `pipe.to(dtype=fp16)` 统一，否则第一个矩阵乘就报 `Half != float`。
+
+选 MV-Adapter 而不是 Zero123++，是因为相机约定能对上：MV-Adapter 的仰角全 0、
+方位角含 0/90/180/270，正是 front/left/back/right；Zero123++ 是方位角
+30/90/150/…、仰角在 +20/−10 间交替，对不上。
 
 ### 颜色是怎么来的
 

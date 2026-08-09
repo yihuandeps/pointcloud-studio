@@ -116,20 +116,37 @@ def infer(image: UploadFile = File(...), max_side: str = Form(default="")):
         raise HTTPException(status_code=500, detail=f"推理失败：{exc}") from exc
 
 
+#: 单图模式用哪个引擎。
+#:
+#: 默认 Hunyuan（只喂正面）。同一张图并排渲染过：TripoSR 的五官是涂抹的、
+#: 发丝一片噪点；Hunyuan 干净得多。TripoSR 是 2024 年初的模型，差距是代际的。
+#: 代价是慢一些（约 12s vs 3–6s）、显存多用一些（5.4GB vs 1.5GB）——
+#: 显存吃紧或要快时设 SINGLE_ENGINE=triposr 换回去。
+SINGLE_ENGINE = os.environ.get("SINGLE_ENGINE", "hunyuan").lower()
+_SINGLE_IS_HUNYUAN = SINGLE_ENGINE != "triposr"
+_SINGLE_KEY = "mv" if _SINGLE_IS_HUNYUAN else "gen"
+
+
+def _single_runner():
+    return mv_runner if _SINGLE_IS_HUNYUAN else gen_runner
+
+
 @app.get("/api/gen/health")
 def gen_health():
-    return gen_runner.info()
+    d = _single_runner().info()
+    d["engine"] = "hunyuan-front-only" if _SINGLE_IS_HUNYUAN else "triposr"
+    return d
 
 
 @app.post("/api/gen/warmup")
 def gen_warmup():
-    """提前把 TripoSR 加载进显存（约 1.4GB 权重，首次冷加载 20s 上下）。"""
+    """提前把单图模式的模型加载进显存。"""
     try:
-        _switch_to("gen")
-        gen_runner.load()
-        return gen_runner.info()
+        _switch_to(_SINGLE_KEY)
+        _single_runner().load()
+        return gen_health()
     except Exception as exc:
-        gen_runner.load_error = str(exc)
+        _single_runner().load_error = str(exc)
         raise HTTPException(status_code=500, detail=f"模型加载失败：{exc}") from exc
 
 
@@ -138,8 +155,10 @@ def generate(image: UploadFile = File(...), points: str = Form(default="")):
     """
     生成式 3D：单图 → 完整 360° 点云（背面由模型补全）。
 
-    返回 imaging.pack_cloud 约定的二进制：
-        头部 JSON { count, model, device, ms } + float32[count*3] XYZ + uint8[count*3] RGB
+    默认走 Hunyuan3D-2mv 的「只给正面」路径 —— 它本来就接受 1–4 张视图，
+    只给一张时退化成模型自己编背面，但几何和正面纹理都明显好过 TripoSR。
+
+    返回 imaging.pack_cloud 约定的二进制，与多视图模式完全一致。
     """
     try:
         raw = image.file.read()
@@ -151,21 +170,30 @@ def generate(image: UploadFile = File(...), points: str = Form(default="")):
         except ValueError:
             n = DEFAULT_POINTS
 
-        _switch_to("gen")
-        result = gen_runner.generate(raw, n_points=n)
+        _switch_to(_SINGLE_KEY)
+        if _SINGLE_IS_HUNYUAN:
+            result = mv_runner.generate({"front": raw}, n_points=n)
+        else:
+            result = gen_runner.generate(raw, n_points=n)
+
+        head = {
+            "count": result["count"],
+            "model": result["model"],
+            "device": result["device"],
+            "resolution": result["resolution"],
+            "engine": "hunyuan-front-only" if _SINGLE_IS_HUNYUAN else "triposr",
+            "hasNormals": True,
+            "hasAO": True,
+            "ms": result["ms"],
+        }
+        # 走 Hunyuan 时它还会回报输入图的体检结果，一并带给前端
+        if result.get("warnings"):
+            head["warnings"] = result["warnings"]
 
         body = pack_cloud(
             result["positions"].tobytes(),
             result["colors"].tobytes(),
-            {
-                "count": result["count"],
-                "model": result["model"],
-                "device": result["device"],
-                "resolution": result["resolution"],
-                "hasNormals": True,
-                "hasAO": True,
-                "ms": result["ms"],
-            },
+            head,
             result["normals"].tobytes(),
             result["ao"].tobytes(),
         )
